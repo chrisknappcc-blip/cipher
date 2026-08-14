@@ -33,28 +33,39 @@
 }
 
 [data-theme="dark"] {
-  --bg: #141412;
-  --bg-panel: #1E1D1B;
-  --bg-secondary: #252420;
-  --bg-hover: #2C2B27;
+  --bg: #0A2A4A;
+  --bg-panel: #0D3355;
+  --bg-secondary: #123153;
+  --bg-hover: #123B63;
 
-  --text: #F0EEE9;
-  --text-secondary: #9B9A96;
-  --text-tertiary: #6B6A65;
+  --text: #EAF2FB;
+  --text-secondary: #8FB8DE;
+  --text-tertiary: #6F98BE;
 
-  --border: rgba(255,255,255,0.07);
-  --border-strong: rgba(255,255,255,0.12);
+  --border: #14406E;
+  --border-strong: #1E5588;
 
-  --accent: #2EAD74;
-  --accent-light: #0D2E1F;
-  --accent-text: #6DDAAA;
+  --accent: #1C6FBE;
+  --accent-light: #123153;
+  --accent-text: #63C7F2;
 
-  --red: #F87171;
+  --red: #D9534F;
   --red-light: #2D1414;
-  --amber: #FBBF24;
+  --amber: #E8A33D;
   --amber-light: #2D1F08;
-  --blue: #60A5FA;
-  --blue-light: #0D1F3C;
+  --blue: #63C7F2;
+  --blue-light: #123153;
+
+  /* Right Now Queue urgency scale — reserved for signal/task/meeting urgency
+     coloring specifically, not general UI chrome. Lime = hot, cyan = warm,
+     gray-blue = cooling, red = stale. Keep this vocabulary limited to the
+     queue views so it stays meaningful instead of decorative. */
+  --urgency-hot: #CFE94A;
+  --urgency-warm: #63C7F2;
+  --urgency-cooling: #7C93A8;
+  --urgency-stale: #D9534F;
+  --pin-color: #E68CDC;
+  --manager-color: #B084E8;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { apiFetch } from './api'
+import RightNowView from './RightNowView'
 
 // ─── Persona detection ────────────────────────────────────────────────────────
 const PERSONAS = {
@@ -1725,7 +1726,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const [isAdmin, setIsAdmin]                 = useState(false)
 
   // UI
-  const [activeTab, setActiveTab]         = useState('dashboard')
+  const [activeTab, setActiveTab]         = useState('right-now')
   const [selectedContact, setSelectedContact] = useState(null)
   const [dateRange, setDateRange]         = useState('168')
   const [signalSort, setSignalSort]       = useState('score_desc')
@@ -2303,6 +2304,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
         <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.05em', textTransform:'uppercase', color:'var(--accent)', marginRight:8 }}>Cipher</div>
 
         {[
+          { key:'right-now',     label:'Right Now' },
           { key:'dashboard',     label:'Dashboard' },
           { key:'gold-command',  label:'Gold Accounts' },
           { key:'gold-overview', label:'Gold Overview' },
@@ -2360,6 +2362,10 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       </nav>
 
       <div style={{ flex:1, padding:'1.5rem', maxWidth:1280, margin:'0 auto', width:'100%' }}>
+
+        {activeTab === 'right-now' && (
+          <RightNowView getToken={getToken} />
+        )}
 
         {activeTab === 'dashboard' && (
           <>
