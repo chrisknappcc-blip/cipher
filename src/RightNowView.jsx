@@ -50,6 +50,7 @@ export default function RightNowView({ getToken }) {
   const [addText, setAddText] = useState('')
   const [adding, setAdding] = useState(false)
   const [selectedId, setSelectedId] = useState(null)
+  const [visibleCount, setVisibleCount] = useState(10)
 
   const load = useCallback(async () => {
     try {
@@ -109,6 +110,7 @@ export default function RightNowView({ getToken }) {
     () => visibleQueue.filter(item => !top5Ids.has(item.id)),
     [visibleQueue, top5Ids]
   )
+  const pagedQueue = restOfQueue.slice(0, visibleCount)
 
   const togglePin = async (itemId) => {
     const isPinned = pinnedIds.has(itemId)
@@ -260,14 +262,14 @@ export default function RightNowView({ getToken }) {
         </div>
 
         <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 10, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
-          Full queue · {restOfQueue.length} items
+          Full queue · {restOfQueue.length} items{restOfQueue.length > 10 ? ` · showing ${Math.min(visibleCount, restOfQueue.length)}` : ''}
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {restOfQueue.length === 0 && (
             <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>Queue clear.</div>
           )}
-          {restOfQueue.map(item => {
+          {pagedQueue.map(item => {
             const color = urgencyColor(item.queueScore)
             const isPinned = pinnedIds.has(item.id)
             return (
@@ -291,6 +293,19 @@ export default function RightNowView({ getToken }) {
             )
           })}
         </div>
+
+        {restOfQueue.length > visibleCount && (
+          <button onClick={() => setVisibleCount(c => c + 10)}
+            style={{ width: '100%', marginTop: 12, padding: '10px', background: 'var(--bg-panel)', border: '1px solid var(--border-strong)', color: 'var(--text-secondary)', borderRadius: 'var(--radius)', fontSize: 12.5, cursor: 'pointer' }}>
+            Show 10 more ({restOfQueue.length - visibleCount} remaining)
+          </button>
+        )}
+        {visibleCount > 10 && restOfQueue.length <= visibleCount && (
+          <button onClick={() => setVisibleCount(10)}
+            style={{ width: '100%', marginTop: 12, padding: '10px', background: 'none', border: 'none', color: 'var(--text-tertiary)', fontSize: 12.5, cursor: 'pointer' }}>
+            Show less
+          </button>
+        )}
       </div>
 
       <div style={{ padding: 20 }}>

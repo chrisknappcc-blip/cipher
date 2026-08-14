@@ -2298,6 +2298,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
   const NAV_ITEMS = [
     { key:'right-now',     label:'Now',     icon:'bolt' },
+    { key:'dashboard',     label:'Dashboard',icon:'list' },
     { key:'gold-command',  label:'Gold',    icon:'star' },
     { key:'gold-overview', label:'Overview',icon:'grid' },
     { key:'reports',       label:'Reports', icon:'chart' },
@@ -2310,6 +2311,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     if (name === 'star')  return <svg {...common}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
     if (name === 'grid')  return <svg {...common}><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
     if (name === 'chart') return <svg {...common}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+    if (name === 'list')  return <svg {...common}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
     return null
   }
 
@@ -2343,10 +2345,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
       <div style={{ display:'flex', flex:1, minHeight:0 }}>
         <nav style={{ width:64, flexShrink:0, borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', alignItems:'center', gap:22, padding:'20px 0' }}>
           {NAV_ITEMS.map(tab => (
-            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-              style={{ background:'none', border:'none', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:4, opacity: activeTab===tab.key ? 1 : 0.55 }}>
+            <button key={tab.key} onClick={() => { setActiveTab(tab.key); if (tab.key === 'dashboard') setNewSignalCount(0) }}
+              style={{ background:'none', border:'none', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:4, opacity: activeTab===tab.key ? 1 : 0.55, position:'relative' }}>
               <NavIcon name={tab.icon} active={activeTab===tab.key} />
               <span style={{ fontSize:9, color: activeTab===tab.key ? 'var(--urgency-hot)' : 'var(--text-tertiary)' }}>{tab.label}</span>
+              {tab.key === 'dashboard' && newSignalCount > 0 && (
+                <span style={{ position:'absolute', top:-2, right:6, fontSize:9, fontWeight:600, background:'var(--red)', color:'#fff', borderRadius:10, padding:'0px 5px', minWidth:14, textAlign:'center' }}>
+                  {newSignalCount}
+                </span>
+              )}
             </button>
           ))}
         </nav>
