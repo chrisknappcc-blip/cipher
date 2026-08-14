@@ -4,7 +4,8 @@
 // Structure: { hubspot: { access_token, refresh_token, expires_at }, microsoft: { ... } }
 
 const STORAGE_ACCOUNT = process.env.AZURE_STORAGE_ACCOUNT_NAME;
-const SAS_TOKEN = process.env.AZURE_STORAGE_SAS_TOKEN;
+const SAS_TOKEN_RAW = process.env.AZURE_STORAGE_SAS_TOKEN || "";
+const SAS_TOKEN = SAS_TOKEN_RAW.startsWith("?") ? SAS_TOKEN_RAW : `?${SAS_TOKEN_RAW}`;
 const CONTAINER = "crm-tokens";
 const BASE_URL = `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${CONTAINER}`;
 
@@ -35,7 +36,10 @@ export async function setTokens(userId, tokens) {
     },
     body: JSON.stringify(merged),
   });
-  if (!res.ok) throw new Error(`Blob write failed: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Blob write failed: ${res.status} — ${body.slice(0, 300)}`);
+  }
   return merged;
 }
 
@@ -50,7 +54,10 @@ export async function clearServiceTokens(userId, service) {
     },
     body: JSON.stringify(existing),
   });
-  if (!res.ok) throw new Error(`Blob write failed: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Blob write failed: ${res.status} — ${body.slice(0, 300)}`);
+  }
   return existing;
 }
 
