@@ -228,15 +228,15 @@ export default function RightNowView({ getToken }) {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 0, background: 'var(--bg)', color: 'var(--text)', minHeight: '100%', position: 'relative' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16, background: 'var(--bg)', color: 'var(--text)', minHeight: '100%', position: 'relative', padding: 4 }}>
 
       {toast && (
-        <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', background: 'var(--bg-panel)', border: '1px solid var(--border-strong)', color: 'var(--text)', padding: '10px 18px', borderRadius: 'var(--radius)', fontSize: 13, boxShadow: '0 4px 16px rgba(0,0,0,0.3)', zIndex: 100 }}>
+        <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text)', padding: '11px 20px', borderRadius: 'var(--radius-lg)', fontSize: 13, boxShadow: 'var(--shadow-soft)', zIndex: 100 }}>
           {toast}
         </div>
       )}
 
-      <div style={{ padding: '20px 24px', borderRight: '1px solid var(--border)' }}>
+      <div style={{ padding: '22px 26px', background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
         {error && (
           <div style={{ background: 'var(--red-light)', color: 'var(--red)', padding: '10px 14px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 16 }}>
@@ -266,9 +266,9 @@ export default function RightNowView({ getToken }) {
             {doneLog.length === 0 ? (
               <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>Nothing done yet this session.</div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {doneLog.map((entry, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 10, border: '1px solid var(--border)', opacity: 0.8 }}>
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '13px 16px', borderRadius: 14, border: '1px solid var(--border)', background: 'var(--bg-panel)', opacity: 0.85 }}>
                     <span style={{ fontSize: 14 }}>{entry.action === 'completed' ? '✓' : '—'}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 500, textDecoration: 'line-through', textDecorationColor: 'var(--border-strong)' }}>
@@ -321,7 +321,7 @@ export default function RightNowView({ getToken }) {
                         </div>
                         <button onClick={() => togglePin(item.id, name)}
                           style={{
-                            flexShrink: 0, fontSize: 11, padding: '4px 9px', borderRadius: 6, cursor: 'pointer',
+                            flexShrink: 0, fontSize: 11, padding: '5px 10px', borderRadius: 8, cursor: 'pointer',
                             background: item.isPinned ? color : 'none',
                             color: item.isPinned ? 'var(--bg)' : 'var(--text-tertiary)',
                             border: item.isPinned ? 'none' : '1px solid var(--border-strong)',
@@ -354,7 +354,7 @@ export default function RightNowView({ getToken }) {
               Full queue · {restOfQueue.length} items{restOfQueue.length > 10 ? ` · showing ${Math.min(visibleCount, restOfQueue.length)}` : ''}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {restOfQueue.length === 0 && (
                 <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>Queue clear.</div>
               )}
@@ -364,14 +364,16 @@ export default function RightNowView({ getToken }) {
                 const name = displayName(item)
                 return (
                   <div key={item.id} onClick={() => setSelectedId(item.id)} style={{
-                    display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', cursor: 'pointer',
-                    borderRadius: 10, border: `1.5px solid ${color}`,
-                    background: `color-mix(in srgb, ${color} 12%, transparent)`,
+                    display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', cursor: 'pointer',
+                    borderRadius: 14, border: `1px solid color-mix(in srgb, ${color} 40%, var(--border))`,
+                    background: `color-mix(in srgb, ${color} 8%, var(--bg-panel))`,
+                    boxShadow: 'var(--shadow-soft)',
                     outline: selectedId === item.id ? '2px solid var(--urgency-hot)' : 'none',
+                    outlineOffset: 1,
                   }}>
                     <button onClick={e => { e.stopPropagation(); markDone(item) }}
                       title={item.source === 'todo' ? 'Mark complete' : 'Dismiss from this session'}
-                      style={{ width: 16, height: 16, borderRadius: 5, border: '1.5px solid var(--border-strong)', background: 'none', cursor: 'pointer', flexShrink: 0 }} />
+                      style={{ width: 17, height: 17, borderRadius: 6, border: '1.5px solid var(--border-strong)', background: 'var(--bg)', cursor: 'pointer', flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 500 }}>{name}{displayCompany(item) ? ` · ${displayCompany(item)}` : ''}</div>
                       <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
@@ -380,7 +382,7 @@ export default function RightNowView({ getToken }) {
                     </div>
                     <button onClick={e => { e.stopPropagation(); togglePin(item.id, name) }}
                       style={{
-                        flexShrink: 0, fontSize: 11, padding: '4px 9px', borderRadius: 6, cursor: 'pointer',
+                        flexShrink: 0, fontSize: 11, padding: '5px 10px', borderRadius: 8, cursor: 'pointer',
                         background: isPinned ? 'var(--pin-color)' : 'none',
                         color: isPinned ? 'var(--bg)' : 'var(--text-tertiary)',
                         border: isPinned ? 'none' : '1px solid var(--border-strong)',
@@ -408,7 +410,7 @@ export default function RightNowView({ getToken }) {
         )}
       </div>
 
-      <div style={{ padding: 20 }}>
+      <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)', alignSelf: 'start' }}>
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 10 }}>Context</div>
         {selectedItem ? (
           <>

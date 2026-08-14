@@ -27,9 +27,11 @@
   --blue: #1D4ED8;
   --blue-light: #EFF6FF;
 
-  --radius: 8px;
-  --radius-lg: 12px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
   --shadow: 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-soft: 0 2px 12px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.04);
 }
 
 [data-theme="dark"] {
@@ -66,6 +68,7 @@
   --urgency-stale: #D9534F;
   --pin-color: #E68CDC;
   --manager-color: #B084E8;
+  --shadow-soft: 0 4px 20px rgba(0,0,0,0.25), 0 1px 3px rgba(0,0,0,0.2);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
