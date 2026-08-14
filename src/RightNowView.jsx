@@ -56,7 +56,8 @@ export default function RightNowView({ getToken }) {
   const [top5Picks, setTop5Picks] = useState([]) // raw {id, rank, rationale} from the scheduled job
   const [pinnedIds, setPinnedIds] = useState(new Set())
   const [dismissedIds, setDismissedIds] = useState(new Set())
-  const [doneLog, setDoneLog] = useState([]) // session log of {id, name, company, whyTag, action, at} — see note above
+  const [persistedDismissed, setPersistedDismissed] = useState([]) // from GET /dismissed — real, survives reload
+  const [completedTodos, setCompletedTodos] = useState([]) // from GET /todo, filtered completed — real, survives reload
   const [view, setView] = useState('queue') // 'queue' | 'done'
   const [toast, setToast] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -74,14 +75,18 @@ export default function RightNowView({ getToken }) {
   const load = useCallback(async () => {
     try {
       setError(null)
-      const [queueRes, top5Res, pinRes] = await Promise.all([
+      const [queueRes, top5Res, pinRes, dismissedRes, todoRes] = await Promise.all([
         apiFetch('/api/hubspot/right-now', getToken),
         apiFetch('/api/hubspot/top5', getToken).catch(() => ({ picks: [] })),
         apiFetch('/api/hubspot/pin', getToken).catch(() => ({ pinnedIds: [] })),
+        apiFetch('/api/hubspot/dismissed', getToken).catch(() => ({ items: [] })),
+        apiFetch('/api/hubspot/todo', getToken).catch(() => ({ items: [] })),
       ])
       setQueue(queueRes.queue || [])
       setTop5Picks(top5Res.picks || [])
       setPinnedIds(new Set(pinRes.pinnedIds || []))
+      setPersistedDismissed(dismissedRes.items || [])
+      setCompletedTodos((todoRes.items || []).filter(t => t.completed))
       if (!selectedId && (queueRes.queue || []).length > 0) {
         setSelectedId(queueRes.queue[0].id)
       }
@@ -128,6 +133,26 @@ export default function RightNowView({ getToken }) {
   )
   const pagedQueue = restOfQueue.slice(0, visibleCount)
 
+  const completedItems = useMemo(() => {
+    const fromTodos = completedTodos.map(t => ({
+      id: `todo-${t.id}`,
+      name: t.text || 'Untitled',
+      company: null,
+      whyTag: t.subtext || 'Manual to-do',
+      action: 'completed',
+      at: t.completedAt || t.createdAt || new Date().toISOString(),
+    }))
+    const fromDismissed = persistedDismissed.map(d => ({
+      id: d.id,
+      name: d.name,
+      company: d.company,
+      whyTag: d.whyTag,
+      action: 'dismissed',
+      at: d.dismissedAt,
+    }))
+    return [...fromTodos, ...fromDismissed].sort((a, b) => new Date(b.at) - new Date(a.at))
+  }, [completedTodos, persistedDismissed])
+
   const togglePin = async (itemId, itemName) => {
     const isPinned = pinnedIds.has(itemId)
     setPinnedIds(prev => {
@@ -155,37 +180,35 @@ export default function RightNowView({ getToken }) {
     }
   }
 
-  const logDone = (item, action) => {
-    setDoneLog(prev => [{
-      id: item.id,
-      name: displayName(item),
-      company: displayCompany(item),
-      whyTag: item.whyTag,
-      action,
-      at: new Date().toISOString(),
-    }, ...prev])
-  }
-
   const markDone = async (item) => {
     const name = displayName(item)
     if (item.source === 'todo') {
       setQueue(prev => prev.filter(i => i.id !== item.id))
-      logDone(item, 'completed')
-      showToast(`Marked "${name}" complete — see Done`)
+      showToast(`Marked "${name}" complete — see Completed Items`)
       try {
         const rawId = item.raw?.id || item.id.replace(/^todo-/, '')
         await apiFetch(`/api/hubspot/todo/${rawId}`, getToken, {
           method: 'PATCH',
           body: JSON.stringify({ completed: true }),
         })
+        setCompletedTodos(prev => [{ ...item.raw, completed: true, completedAt: new Date().toISOString() }, ...prev])
       } catch (e) {
         setError(`Couldn't mark complete: ${e.message}`)
         load()
       }
     } else {
       setDismissedIds(prev => new Set(prev).add(item.id))
-      logDone(item, 'dismissed')
-      showToast(`Dismissed "${name}" for this session — see Done`)
+      showToast(`Dismissed "${name}" — see Completed Items`)
+      const entry = { id: item.id, name, company: displayCompany(item), whyTag: item.whyTag, source: item.source }
+      setPersistedDismissed(prev => [{ ...entry, dismissedAt: new Date().toISOString() }, ...prev])
+      try {
+        await apiFetch('/api/hubspot/dismissed', getToken, {
+          method: 'POST',
+          body: JSON.stringify(entry),
+        })
+      } catch (e) {
+        setError(`Couldn't save dismissal: ${e.message}`)
+      }
     }
   }
 
@@ -251,9 +274,9 @@ export default function RightNowView({ getToken }) {
           </button>
           <button onClick={() => setView('done')}
             style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '8px 4px', fontSize: 13, fontWeight: view === 'done' ? 600 : 400, color: view === 'done' ? 'var(--text)' : 'var(--text-tertiary)', borderBottom: view === 'done' ? '2px solid var(--urgency-hot)' : '2px solid transparent', display: 'flex', alignItems: 'center', gap: 6 }}>
-            Done
-            {doneLog.length > 0 && (
-              <span style={{ fontSize: 10, background: 'var(--bg-secondary)', color: 'var(--text-tertiary)', borderRadius: 10, padding: '1px 6px' }}>{doneLog.length}</span>
+            Completed Items
+            {completedItems.length > 0 && (
+              <span style={{ fontSize: 10, background: 'var(--bg-secondary)', color: 'var(--text-tertiary)', borderRadius: 10, padding: '1px 6px' }}>{completedItems.length}</span>
             )}
           </button>
         </div>
@@ -261,14 +284,14 @@ export default function RightNowView({ getToken }) {
         {view === 'done' ? (
           <>
             <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginBottom: 14 }}>
-              What you've actioned this session. To-do completions are saved for good; dismissed items reset if you reload the page.
+              Everything completed or dismissed — this persists across reloads.
             </div>
-            {doneLog.length === 0 ? (
-              <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>Nothing done yet this session.</div>
+            {completedItems.length === 0 ? (
+              <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>Nothing completed yet.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {doneLog.map((entry, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '13px 16px', borderRadius: 14, border: '1px solid var(--border)', background: 'var(--bg-panel)', opacity: 0.85 }}>
+                {completedItems.map((entry, i) => (
+                  <div key={entry.id + i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '13px 16px', borderRadius: 14, border: '1px solid var(--border)', background: 'var(--bg-panel)', opacity: 0.85 }}>
                     <span style={{ fontSize: 14 }}>{entry.action === 'completed' ? '✓' : '—'}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 500, textDecoration: 'line-through', textDecorationColor: 'var(--border-strong)' }}>
@@ -279,7 +302,7 @@ export default function RightNowView({ getToken }) {
                       </div>
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                      {new Date(entry.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                      {new Date(entry.at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
                     </div>
                   </div>
                 ))}

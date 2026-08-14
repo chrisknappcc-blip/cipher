@@ -2299,8 +2299,8 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
   const NAV_ITEMS = [
     { key:'right-now',     label:'Now',     icon:'bolt' },
     { key:'dashboard',     label:'Dashboard',icon:'list' },
-    { key:'gold-command',  label:'Gold',    icon:'star' },
-    { key:'gold-overview', label:'Overview',icon:'grid' },
+    { key:'gold-command',  label:'Gold Accounts', icon:'star' },
+    { key:'gold-overview', label:'Gold Overview', icon:'grid' },
     { key:'reports',       label:'Reports', icon:'chart' },
   ]
 
@@ -2343,12 +2343,12 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
 
       {/* Body: icon sidebar + main content, replacing the old horizontal tab bar */}
       <div style={{ display:'flex', flex:1, minHeight:0 }}>
-        <nav style={{ width:64, flexShrink:0, borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', alignItems:'center', gap:22, padding:'20px 0' }}>
+        <nav style={{ width:80, flexShrink:0, borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', alignItems:'center', gap:22, padding:'20px 8px' }}>
           {NAV_ITEMS.map(tab => (
             <button key={tab.key} onClick={() => { setActiveTab(tab.key); if (tab.key === 'dashboard') setNewSignalCount(0) }}
               style={{ background:'none', border:'none', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:4, opacity: activeTab===tab.key ? 1 : 0.55, position:'relative' }}>
               <NavIcon name={tab.icon} active={activeTab===tab.key} />
-              <span style={{ fontSize:9, color: activeTab===tab.key ? 'var(--urgency-hot)' : 'var(--text-tertiary)' }}>{tab.label}</span>
+              <span style={{ fontSize:9, textAlign:'center', lineHeight:1.3, color: activeTab===tab.key ? 'var(--urgency-hot)' : 'var(--text-tertiary)' }}>{tab.label}</span>
               {tab.key === 'dashboard' && newSignalCount > 0 && (
                 <span style={{ position:'absolute', top:-2, right:6, fontSize:9, fontWeight:600, background:'var(--red)', color:'#fff', borderRadius:10, padding:'0px 5px', minWidth:14, textAlign:'center' }}>
                   {newSignalCount}
