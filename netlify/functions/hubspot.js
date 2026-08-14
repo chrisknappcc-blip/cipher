@@ -6365,6 +6365,57 @@ export const handler = async (event, context) => {
     // GET /pin — read the current pinned item ids, so the frontend can
     // restore pin state on page load instead of only ever seeing pins
     // created in the current session.
+    // GET /dismissed — read the persisted list of dismissed queue items
+    // (signals/tasks/meetings that were checked off but have no real
+    // "complete" concept on the backend). This is what makes the Done /
+    // Completed Items view survive a page reload instead of resetting
+    // every session.
+    if (method === "GET" && path === "/dismissed") {
+      try {
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ items: [] });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/dismissed-${user.userId}.json${sas}`;
+        const res = await fetch(url);
+        if (!res.ok) return ok({ items: [] });
+        const data = await res.json();
+        return ok({ items: data.items || [] });
+      } catch (err) {
+        return ok({ items: [], error: err.message });
+      }
+    }
+
+    // POST /dismissed  { id, name, company, whyTag, source } — records a
+    // dismissed item permanently. Capped at the most recent 200 so this
+    // blob doesn't grow forever.
+    if (method === "POST" && path === "/dismissed") {
+      try {
+        const body = JSON.parse(event.body || "{}");
+        if (!body.id) return error(400, "id is required");
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ saved: false });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/dismissed-${user.userId}.json${sas}`;
+        const res = await fetch(url);
+        const data = res.ok ? await res.json() : { items: [] };
+        const entry = {
+          id: body.id,
+          name: body.name || "Untitled",
+          company: body.company || null,
+          whyTag: body.whyTag || null,
+          source: body.source || null,
+          dismissedAt: new Date().toISOString(),
+        };
+        const updated = [entry, ...(data.items || []).filter(i => i.id !== body.id)].slice(0, 200);
+        await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+          body: JSON.stringify({ items: updated }),
+        });
+        return ok({ saved: true, items: updated });
+      } catch (err) {
+        return error(500, `Dismiss error: ${err.message}`);
+      }
+    }
+
     if (method === "GET" && path === "/pin") {
       try {
         if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ pinnedIds: [] });
