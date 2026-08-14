@@ -1,16 +1,16 @@
 // netlify/functions/top5-scheduler.js
 // NEW FILE — path from repo root: netlify/functions/top5-scheduler.js
 //
-// Runs hourly (Netlify scheduled function), but only does real work at
-// 8am and 1pm Eastern. Checking actual Eastern time via Intl instead of a
-// fixed UTC cron means this self-corrects through DST twice a year with no
-// manual schedule changes needed.
+// Runs every hour (Netlify scheduled function). Previously restricted to
+// 8am/1pm Eastern only — now runs every hour on the hour, giving a much
+// more "live" feel at a modest cost increase (roughly $8-10/month for a
+// team under 10, vs ~$1.50/month at twice a day).
 //
 // For each known user: pulls their full Right Now Queue, hands the top
 // candidates to Claude, and caches the ranked Top 5 + one-line rationale
 // per item to Azure Blob. The /top5 endpoint in hubspot.js just reads that
 // cache — this is the only place that ever calls the AI model for this
-// feature, so cost stays fixed at two calls per rep per day, not per page load.
+// feature, so cost stays fixed at the scheduled cadence, not per page load.
 
 import { computeRightNowQueue, getActiveUserIds } from "./hubspot.js";
 
@@ -40,8 +40,11 @@ async function writeJson(name, data) {
   });
 }
 
-// DST-safe Eastern time check — no hardcoded UTC offset.
-function currentEasternSlot() {
+// Returns the current Eastern-time hour and date, used as the run-guard key
+// (dateKey + hour) so a retry or overlapping invocation within the same
+// hour doesn't double-fire. DST-safe since it reads real Eastern time via
+// Intl rather than a fixed UTC offset.
+function currentEasternHourKey() {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     hour: "numeric",
@@ -54,10 +57,7 @@ function currentEasternSlot() {
   const get = t => parts.find(p => p.type === t)?.value;
   const hour = parseInt(get("hour"), 10);
   const dateKey = `${get("year")}-${get("month")}-${get("day")}`;
-
-  if (hour === 8)  return { slot: "AM", dateKey };
-  if (hour === 13) return { slot: "PM", dateKey };
-  return null; // not a run hour — most invocations of this hourly function do nothing
+  return { slot: `h${hour}`, dateKey };
 }
 
 async function alreadyRan(userId, dateKey, slot) {
@@ -97,8 +97,7 @@ ${JSON.stringify(candidates.map(c => ({ id: c.id, name: c.contact?.name, company
 }
 
 export default async () => {
-  const { slot, dateKey } = currentEasternSlot() || {};
-  if (!slot) return new Response("Not a scheduled run hour, skipping.", { status: 200 });
+  const { slot, dateKey } = currentEasternHourKey();
 
   const userIds = await getActiveUserIds();
   const results = [];
