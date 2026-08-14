@@ -1553,6 +1553,7 @@ export const handler = async (event, context) => {
               ],
             }],
             properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
+            associations: ["contacts"],
             sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
             limit:  200,
           }).catch(() => ({ results: [] })),
@@ -1567,22 +1568,46 @@ export const handler = async (event, context) => {
               ],
             }],
             properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
+            associations: ["contacts"],
             sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
             limit:  200,
           }).catch(() => ({ results: [] })),
         ]);
 
-        const normalizeTask = (t, overdue = false) => ({
-          id:       t.id,
-          subject:  t.properties?.hs_task_subject  || "Untitled task",
-          status:   t.properties?.hs_task_status   || "NOT_STARTED",
-          type:     t.properties?.hs_task_type     || "TODO",
-          dueDate:  t.properties?.hs_timestamp     || null,
-          priority: t.properties?.hs_task_priority || "NONE",
-          body:     t.properties?.hs_task_body     || null,
-          overdue,
-          url: `https://app.hubspot.com/tasks/39921549/view/all/task/${t.id}`,
-        });
+        // ── Batch-fetch contacts associated with these tasks so the queue
+        // can dedupe a task against other signals for the same contact ──────
+        const taskContactIds = [...new Set(
+          [...(upcomingTasksData.results || []), ...(overdueTasksData.results || [])]
+            .map(t => t.associations?.contacts?.results?.[0]?.id)
+            .filter(Boolean)
+        )];
+        const taskContactMap = {};
+        if (taskContactIds.length > 0) {
+          try {
+            const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+              properties: BASE_CONTACT_PROPS,
+              inputs: taskContactIds.map(id => ({ id })),
+            });
+            (batch.results || []).forEach(c => { taskContactMap[c.id] = normalizeContact(c); });
+          } catch { /* enrichment best-effort */ }
+        }
+
+        const normalizeTask = (t, overdue = false) => {
+          const contactId = t.associations?.contacts?.results?.[0]?.id || null;
+          return {
+            id:       t.id,
+            subject:  t.properties?.hs_task_subject  || "Untitled task",
+            status:   t.properties?.hs_task_status   || "NOT_STARTED",
+            type:     t.properties?.hs_task_type     || "TODO",
+            dueDate:  t.properties?.hs_timestamp     || null,
+            priority: t.properties?.hs_task_priority || "NONE",
+            body:     t.properties?.hs_task_body     || null,
+            overdue,
+            contactId,
+            contact: contactId ? (taskContactMap[contactId] || null) : null,
+            url: `https://app.hubspot.com/tasks/39921549/view/all/task/${t.id}`,
+          };
+        };
 
         const dueTasks = [
           ...(overdueTasksData.results  || []).map(t => normalizeTask(t, true)),
@@ -6112,12 +6137,14 @@ export const handler = async (event, context) => {
           contact: r.contact,
         }));
 
-        // dueTasks map directly onto scoreTaskForQueue's expected shape.
+        // dueTasks map directly onto scoreTaskForQueue's expected shape —
+        // contactId now comes from the task's HubSpot contact association,
+        // so a task and a signal for the same person collapse into one line.
         const dueTasksForQueue = (taskData.dueTasks || []).map(t => ({
           id: t.id,
           dueDate: t.dueDate,
-          contactId: null, // HubSpot task objects here aren't associated back to a contactId yet
-          contact: null,
+          contactId: t.contactId,
+          contact: t.contact,
           subject: t.subject,
         }));
 
