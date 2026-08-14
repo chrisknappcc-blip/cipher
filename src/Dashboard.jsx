@@ -2296,51 +2296,29 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     </div>
   )
 
+  const NAV_ITEMS = [
+    { key:'right-now',     label:'Now',     icon:'bolt' },
+    { key:'gold-command',  label:'Gold',    icon:'star' },
+    { key:'gold-overview', label:'Overview',icon:'grid' },
+    { key:'reports',       label:'Reports', icon:'chart' },
+  ]
+
+  const NavIcon = ({ name, active }) => {
+    const color = active ? 'var(--urgency-hot)' : 'var(--text-secondary)'
+    const common = { width:20, height:20, viewBox:'0 0 24 24', fill:'none', stroke:color, strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round' }
+    if (name === 'bolt')  return <svg {...common}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
+    if (name === 'star')  return <svg {...common}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
+    if (name === 'grid')  return <svg {...common}><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    if (name === 'chart') return <svg {...common}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+    return null
+  }
+
   return (
     <div style={{ minHeight:'100vh', background:'var(--bg)', display:'flex', flexDirection:'column' }}>
 
-      {/* Top nav */}
-      <nav style={{ background:'var(--bg-panel)', borderBottom:'1px solid var(--border)', padding:'0 1.5rem', display:'flex', alignItems:'center', height:52, gap:24, position:'sticky', top:0, zIndex:50 }}>
-        <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.05em', textTransform:'uppercase', color:'var(--accent)', marginRight:8 }}>Cipher</div>
-
-        {[
-          { key:'right-now',     label:'Right Now' },
-          { key:'dashboard',     label:'Dashboard' },
-          { key:'gold-command',  label:'Gold Accounts' },
-          { key:'gold-overview', label:'Gold Overview' },
-          { key:'reports',       label:'Reports' },
-          { key:'contacts',      label:'Contacts' },
-          { key:'map-tool',      label:'Market Mapper' },
-          { key:'contact-intel', label:'Contact Intelligence' },
-          { key:'cpiq',          label:'CPIQ' },
-          { key:'fin-analysis',  label:'Financial Analysis' },
-          // Dynamic tabs from registry
-          ...dynamicTabs.map(t => ({ key:`dyn-${t.id}`, label:t.label, badge:t.badge, url:t.url, tabType:t.type })),
-          // Add App tab (visible to all users)
-          { key:'add-app', label:'+ Add App', isAddApp:true },
-        ].map(tab => (
-          <button key={tab.key} onClick={() => {
-            if (tab.tabType === 'link' && tab.url) {
-              window.open(tab.url, '_blank', 'noopener,noreferrer')
-              return
-            }
-            setActiveTab(tab.key)
-            if (tab.key === 'dashboard') setNewSignalCount(0)
-          }}
-            style={{ fontSize:13, fontWeight:activeTab===tab.key?500:400, color: tab.isAddApp ? 'var(--text-tertiary)' : activeTab===tab.key?'var(--text)':'var(--text-secondary)', padding:'0 2px', height:52, background:'none', border:'none', borderBottom:activeTab===tab.key?'2px solid var(--accent)':'2px solid transparent', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
-            {tab.label}
-            {tab.key === 'dashboard' && newSignalCount > 0 && (
-              <span style={{ fontSize:10, fontWeight:600, background:'var(--red)', color:'#fff', borderRadius:10, padding:'1px 6px', minWidth:16, textAlign:'center' }}>
-                {newSignalCount}
-              </span>
-            )}
-            {tab.badge && (
-              <span style={{ fontSize:9, fontWeight:600, background:'var(--amber-light)', color:'var(--amber)', borderRadius:4, padding:'1px 5px', letterSpacing:'.03em' }}>
-                {tab.badge}
-              </span>
-            )}
-          </button>
-        ))}
+      {/* Top header — logo and account controls only, no tabs here anymore */}
+      <div style={{ background:'var(--bg-panel)', borderBottom:'1px solid var(--border)', padding:'0 1.5rem', display:'flex', alignItems:'center', height:52, position:'sticky', top:0, zIndex:50 }}>
+        <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.05em', textTransform:'uppercase', color:'var(--accent)' }}>Cipher</div>
 
         <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:10 }}>
           {/* Live polling indicator */}
@@ -2359,7 +2337,19 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
           </button>
           <button onClick={() => signOut()} style={{ fontSize:12, color:'var(--text-tertiary)', background:'none', border:'none', cursor:'pointer' }}>Sign out</button>
         </div>
-      </nav>
+      </div>
+
+      {/* Body: icon sidebar + main content, replacing the old horizontal tab bar */}
+      <div style={{ display:'flex', flex:1, minHeight:0 }}>
+        <nav style={{ width:64, flexShrink:0, borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', alignItems:'center', gap:22, padding:'20px 0' }}>
+          {NAV_ITEMS.map(tab => (
+            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+              style={{ background:'none', border:'none', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:4, opacity: activeTab===tab.key ? 1 : 0.55 }}>
+              <NavIcon name={tab.icon} active={activeTab===tab.key} />
+              <span style={{ fontSize:9, color: activeTab===tab.key ? 'var(--urgency-hot)' : 'var(--text-tertiary)' }}>{tab.label}</span>
+            </button>
+          ))}
+        </nav>
 
       <div style={{ flex:1, padding:'1.5rem', maxWidth:1280, margin:'0 auto', width:'100%' }}>
 
@@ -4044,6 +4034,7 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
             }}
           />
         )}
+      </div>
       </div>
     </div>
   )
