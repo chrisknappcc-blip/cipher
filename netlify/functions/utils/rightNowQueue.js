@@ -117,6 +117,70 @@ function scoreTaskForQueue(task) {
   };
 }
 
+// ── Upcoming meetings ────────────────────────────────────────────────────────
+// Meetings don't cool off and don't "age" the way overdue items do — they
+// count DOWN as the date approaches, then stay visible and hot through the
+// day of the meeting. They never silently disappear before that.
+function scoreMeetingForQueue(meeting) {
+  const hoursUntil = -hoursSince(meeting.startTime);
+  let queueScore = 60; // baseline visibility floor, well above a cooling signal
+  let whyTag;
+
+  if (hoursUntil == null) {
+    whyTag = "Meeting scheduled";
+  } else if (hoursUntil <= 0) {
+    // Meeting is today / in progress — max visibility
+    queueScore = 150;
+    whyTag = "Meeting today";
+  } else if (hoursUntil <= 24) {
+    queueScore = 130;
+    whyTag = `Meeting tomorrow, ${Math.round(hoursUntil)}h out`;
+  } else if (hoursUntil <= 72) {
+    queueScore = 90;
+    whyTag = `Meeting in ${Math.round(hoursUntil / 24)}d`;
+  } else {
+    queueScore = 60;
+    whyTag = `Meeting in ${Math.round(hoursUntil / 24)}d`;
+  }
+
+  return {
+    source: "meeting",
+    id: `mtg-${meeting.id}`,
+    contactId: meeting.contactId || null,
+    contact: meeting.contact || null,
+    label: meeting.subject,
+    queueScore: Math.round(queueScore),
+    whyTag,
+    raw: meeting,
+  };
+}
+
+// Auto-generates a "confirm this meeting" to-do exactly once per meeting,
+// 3 days out. Idempotency is the tricky part: this must NOT recreate the
+// task on every poll. Caller is expected to persist a `confirmationTaskId`
+// (or similar flag) back onto the meeting record/blob once created — this
+// function just decides whether one is due, it doesn't do the writing.
+function needsConfirmationTask(meeting) {
+  const hoursUntil = -hoursSince(meeting.startTime);
+  const alreadyCreated = !!meeting.confirmationTaskCreated;
+  // Fire once the meeting crosses into the 3-day window and stays true
+  // until the caller marks it created — caller should check this on
+  // every relevant poll and only act the first time it sees `true`.
+  return !alreadyCreated && hoursUntil != null && hoursUntil <= 72 && hoursUntil > 0;
+}
+
+function buildConfirmationTodo(meeting) {
+  return {
+    id: `confirm-${meeting.id}`,
+    contactId: meeting.contactId || null,
+    text: `Confirm meeting with ${meeting.contact?.name || "contact"} on ${meeting.startTime}`,
+    autoDetected: true,
+    priority: "HIGH",
+    createdAt: new Date().toISOString(),
+    linkedMeetingId: meeting.id,
+  };
+}
+
 // ── Manual / auto-detected to-dos ───────────────────────────────────────────
 function scoreTodoForQueue(todo) {
   const base = todo.priority === "HIGH" ? 90 : typeof todo.priority === "number" ? 90 - todo.priority * 5 : 30;
@@ -140,11 +204,12 @@ function scoreTodoForQueue(todo) {
 // signals: output of scoreAllSignals() from hubspot.js
 // tasks:   HubSpot tasks already fetched with dueDate/contactId
 // todos:   items from todoStore.getTodos()
-export function buildRightNowQueue({ signals = [], tasks = [], todos = [] } = {}) {
+export function buildRightNowQueue({ signals = [], tasks = [], todos = [], meetings = [] } = {}) {
   const scored = [
     ...signals.filter(s => s.contactId).map(scoreSignalForQueue),
     ...tasks.map(scoreTaskForQueue),
     ...todos.filter(t => !t.completed).map(scoreTodoForQueue),
+    ...meetings.map(scoreMeetingForQueue),
   ];
 
   // Dedup by contactId: keep the highest-scoring item per contact so the
@@ -160,3 +225,5 @@ export function buildRightNowQueue({ signals = [], tasks = [], todos = [] } = {}
 
   return [...byContact.values()].sort((a, b) => b.queueScore - a.queueScore);
 }
+
+export { needsConfirmationTask, buildConfirmationTodo };
