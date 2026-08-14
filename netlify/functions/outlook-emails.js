@@ -19,8 +19,8 @@
 
 const CLIENT_ID     = process.env.MICROSOFT_CLIENT_ID;
 const CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET;
-const AZURE_ACCOUNT = "carepathiqdata";
-const CONTAINER     = "crm-tokens";
+const AZURE_ACCOUNT = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+const CONTAINER     = process.env.AZURE_STORAGE_CONTAINER || "crm-tokens";
 const CACHE_TTL_MS  = 15 * 60 * 1000; // 15 minutes
 
 const CORS = {

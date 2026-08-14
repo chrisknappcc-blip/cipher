@@ -8,8 +8,8 @@
 
 import { BlobServiceClient } from "@azure/storage-blob";
 
-const AZURE_ACCOUNT = "carepathiqdata";
-const CONTAINER     = "crm-tokens";
+const AZURE_ACCOUNT = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+const CONTAINER     = process.env.AZURE_STORAGE_CONTAINER || "crm-tokens";
 const CACHE_TTL_MS  = 24 * 60 * 60 * 1000;
 
 const CORS = {

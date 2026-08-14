@@ -4,11 +4,11 @@
 
 const CLIENT_ID     = process.env.MICROSOFT_CLIENT_ID;
 const CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET;
-const REDIRECT_URI  = "https://hubspot-overlay-ck.netlify.app/api/outlook-callback";
+const REDIRECT_URI  = process.env.MICROSOFT_REDIRECT_URI;
 const TENANT        = "common";
-const AZURE_ACCOUNT = "carepathiqdata";
-const CONTAINER     = "crm-tokens";
-const DASHBOARD     = "https://hubspot-overlay-ck.netlify.app";
+const AZURE_ACCOUNT = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+const CONTAINER     = process.env.AZURE_STORAGE_CONTAINER || "crm-tokens";
+const DASHBOARD     = process.env.APP_URL;
 
 // ── Azure Blob Storage via REST API (no SDK needed) ───────────────────────────
 async function storeTokens(userId, tokens) {

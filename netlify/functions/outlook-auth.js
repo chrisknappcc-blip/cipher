@@ -2,10 +2,10 @@
 // GET /api/outlook-auth?userId=<clerkUserId>
 // Redirects the browser to Microsoft's consent screen.
 
-const CLIENT_ID   = process.env.MICROSOFT_CLIENT_ID;
-const REDIRECT_URI = "https://hubspot-overlay-ck.netlify.app/api/outlook-callback";
-const SCOPES      = "Mail.Read offline_access";
-const TENANT      = "common";
+const CLIENT_ID    = process.env.MICROSOFT_CLIENT_ID;
+const REDIRECT_URI = process.env.MICROSOFT_REDIRECT_URI;
+const SCOPES       = "Mail.Read offline_access";
+const TENANT       = "common";
 
 export const config = { path: "/api/outlook-auth" };
 
