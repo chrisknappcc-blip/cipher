@@ -1011,7 +1011,7 @@ async function computeTaskQueue(user, qp) {
     const now     = Date.now();
     const sinceISO    = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
     const windowEnd   = new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
-    const overdueFrom = new Date(now - 90  * 24 * 60 * 60 * 1000).toISOString();
+    const overdueFrom = new Date(now - 30  * 24 * 60 * 60 * 1000).toISOString(); // was 90 — stale auto-generated tasks don't need that long a tail
 
     const customFilters = buildCustomFilters(qp); // picks up assigned_bdr, territory etc.
 
