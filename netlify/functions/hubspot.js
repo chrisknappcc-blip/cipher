@@ -6362,6 +6362,23 @@ export const handler = async (event, context) => {
     //   instantly, independent of the twice-daily AI refresh.
     // DELETE /pin/{itemId}    — unpin.
     // Stored per-user so pins survive a page reload.
+    // GET /pin — read the current pinned item ids, so the frontend can
+    // restore pin state on page load instead of only ever seeing pins
+    // created in the current session.
+    if (method === "GET" && path === "/pin") {
+      try {
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ pinnedIds: [] });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pinned-${user.userId}.json${sas}`;
+        const res = await fetch(url);
+        if (!res.ok) return ok({ pinnedIds: [] });
+        const data = await res.json();
+        return ok({ pinnedIds: data.pinnedIds || [] });
+      } catch (err) {
+        return ok({ pinnedIds: [], error: err.message });
+      }
+    }
+
     if (method === "POST" && path === "/pin") {
       try {
         const body = JSON.parse(event.body || "{}");
