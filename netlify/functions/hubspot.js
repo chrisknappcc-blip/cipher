@@ -65,6 +65,36 @@ async function addConfirmedOooId(userId, contactId, existingSet) {
     });
   } catch (e) { console.error("[ooo-followups] write failed:", e.message); }
 }
+
+// Same pattern again, for sequence-finished follow-ups — fires once per
+// enrollment when it hits FINISHED, prompting "decide what's next" instead
+// of letting it go quiet with no signal at all. This matters more now that
+// sequences are the primary outreach channel.
+function sequenceFollowupsBlobUrl(userId) {
+  const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/sequence-followups-${userId}.json${sas}`;
+}
+async function getConfirmedSequenceIds(userId) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return new Set();
+  try {
+    const res = await fetch(sequenceFollowupsBlobUrl(userId));
+    if (!res.ok) return new Set();
+    const data = await res.json();
+    return new Set(data.confirmedIds || []);
+  } catch { return new Set(); }
+}
+async function addConfirmedSequenceId(userId, enrollmentId, existingSet) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return;
+  const updated = new Set(existingSet);
+  updated.add(enrollmentId);
+  try {
+    await fetch(sequenceFollowupsBlobUrl(userId), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+      body: JSON.stringify({ confirmedIds: [...updated] }),
+    });
+  } catch (e) { console.error("[sequence-followups] write failed:", e.message); }
+}
 async function appendBotEntries(newBots) {
   if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN || !newBots.length) return;
   try {
@@ -1560,8 +1590,66 @@ export async function computeRightNowQueue(userId, qp = {}) {
     // ── Outlook meetings, same window ────────────────────────────────────
     const outlookEvents = await getOutlookCalendarEvents(userId, meetingWindowStart, meetingWindowEnd);
 
+    // ── Outlook sent-email cross-reference ───────────────────────────────
+    // Some outreach goes out through Outlook directly rather than HubSpot's
+    // tracked send, which makes it invisible to HubSpot's own reply-awaiting
+    // detection above. This pulls Outlook's sent-items (already fetched and
+    // cached by outlook-emails.js) and flags anyone where the most recent
+    // Outlook send is newer than any reply HubSpot knows about — i.e., a
+    // real follow-up gap this app would otherwise miss entirely.
+    let outlookSignals = [];
+    try {
+      const outlookRes = await fetch(`${process.env.APP_URL}/api/outlook-emails?userId=${userId}&days=14`);
+      if (outlookRes.ok) {
+        const outlookData = await outlookRes.json();
+        if (outlookData.connected) {
+          for (const [email, sends] of Object.entries(outlookData.emails || {})) {
+            const contact = contactsByEmail[email.toLowerCase()];
+            if (!contact || !sends?.length) continue;
+            const lastSend = sends.reduce((a, b) => new Date(a.sentAt) > new Date(b.sentAt) ? a : b);
+            const lastKnownReply = contact.lastReplyDate ? new Date(contact.lastReplyDate) : null;
+            if (!lastKnownReply || new Date(lastSend.sentAt) > lastKnownReply) {
+              outlookSignals.push({
+                id: `outlook-sent-${contact.id}`,
+                contactId: contact.id,
+                contact,
+                subject: lastSend.subject,
+                sentAt: lastSend.sentAt,
+              });
+            }
+          }
+        }
+      }
+    } catch (e) { console.error("[right-now] Outlook cross-reference failed:", e.message); }
+
     // ── Merge, dedup, score ───────────────────────────────────────────────
     const mergedMeetings = mergeMeetings(hsMeetings, outlookEvents, contactMap, contactsByEmail);
+
+    // ── Sequence state — sequences are now the primary outreach channel,
+    // so a sequence quietly ending with no next step decided is a real gap.
+    // Bounded to the first 30 currently-enrolled contacts per run to keep
+    // the per-contact enrollment lookups (unavoidably one call each) bounded.
+    const enrolledContacts = (taskData.upcomingSequences || []).slice(0, 30);
+    const enrollmentResults = await Promise.all(
+      enrolledContacts.map(c => fetchSequenceEnrollments(userId, c.contactId).catch(() => []))
+    );
+    const confirmedSequenceIds = await getConfirmedSequenceIds(userId);
+    for (let i = 0; i < enrollmentResults.length; i++) {
+      const contact = enrolledContacts[i];
+      for (const enr of enrollmentResults[i]) {
+        if (enr.state === "FINISHED" && !confirmedSequenceIds.has(enr.id)) {
+          await addTodo(userId, {
+            contactId: contact.contactId,
+            text: `Sequence "${enr.subject}" ended for ${contact.contact?.name || "contact"} — decide next step`,
+            autoDetected: true,
+            priority: "HIGH",
+            createdAt: new Date().toISOString(),
+          });
+          await addConfirmedSequenceId(userId, enr.id, confirmedSequenceIds);
+          confirmedSequenceIds.add(enr.id);
+        }
+      }
+    }
 
     // ── Confirmation to-do: fire once per meeting, 3 days out ────────────
     const confirmedIds = await getConfirmedMeetingIds(userId);
@@ -1580,7 +1668,19 @@ export async function computeRightNowQueue(userId, qp = {}) {
     const todos = await getTodos(userId);
 
     const queue = buildRightNowQueue({
-      signals: [...signals, ...replySignals],
+      signals: [
+        ...signals,
+        ...replySignals,
+        ...outlookSignals.map(o => ({
+          id: o.id,
+          type: "SENT_NO_REPLY", // NOT "REPLY" — this is outbound (we sent, no response), scored/labeled accordingly
+          timestamp: o.sentAt,
+          score: 70, // slightly below a real inbound reply (100) — this is "we reached out", not "they responded"
+          label: `Sent via Outlook: ${o.subject || "no subject"}`,
+          contactId: o.contactId,
+          contact: o.contact,
+        })),
+      ],
       tasks: dueTasksForQueue,
       todos,
       meetings: mergedMeetings.map(m => ({
