@@ -1006,6 +1006,628 @@ async function handleOAuthCallback(event) {
 }
 
 
+async function computeTaskQueue(user, qp) {
+    const days    = Math.min(parseInt(qp.days || "14", 10), 30);
+    const now     = Date.now();
+    const sinceISO    = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+    const windowEnd   = new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
+    const overdueFrom = new Date(now - 90  * 24 * 60 * 60 * 1000).toISOString();
+
+    const customFilters = buildCustomFilters(qp); // picks up assigned_bdr, territory etc.
+
+    // ── Section 1: Replies awaiting response ───────────────────────────────
+    // Logic: find contacts where a reply exists in the window AND no outbound
+    // activity was sent AFTER the reply BY ANYONE (not just the selected rep).
+    //
+    // Owner-aware: fetch hubspot_owner_id on each contact. If the contact owner
+    // (AE) sent activity after the reply, exclude it -- AE is handling it.
+    // Selected rep filter (assigned_bdr) determines whose queue we're showing.
+
+    // Build owner ID lookup from the known owner list for the portal
+    const OWNER_NAME_TO_ID = {};
+    try {
+      const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
+      for (const o of (ownersData.results || [])) {
+        const name = `${o.firstName||""} ${o.lastName||""}`.trim();
+        if (name) OWNER_NAME_TO_ID[name] = String(o.id);
+      }
+    } catch { /* use empty map */ }
+
+    // assigned_bdr: comma-separated BDR names
+    // owner_id: comma-separated owner IDs for non-BDR members
+    const assignedBdrList = qp.assigned_bdr
+      ? decodeURIComponent(qp.assigned_bdr).split(',').map(s => s.trim()).filter(Boolean)
+      : [];
+    const ownerIdList = qp.owner_id
+      ? String(qp.owner_id).split(',').map(s => s.trim()).filter(Boolean)
+      : [];
+
+    // All selected owner IDs (from both bdr names and direct owner_id param)
+    const selectedOwnerIds = [
+      ...assignedBdrList.map(name => OWNER_NAME_TO_ID[name]).filter(Boolean),
+      ...ownerIdList,
+    ];
+    const selectedRepOwnerId = selectedOwnerIds.length === 1 ? selectedOwnerIds[0] : null;
+
+    // Build filter groups for replies -- OR between assigned_bdr and hubspot_owner_id
+    const replyFilterGroups = buildFilterGroups(qp).flatMap(g => [
+      { filters: [{ propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }, ...g.filters] },
+      { filters: [{ propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }, ...g.filters] },
+    ]);
+
+    const repliesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+      filterGroups: replyFilterGroups,
+      properties: [
+        ...BASE_CONTACT_PROPS,
+        "hs_sales_email_last_replied",
+        "hs_email_last_reply_date",
+        "hs_last_sales_activity_timestamp",
+        "hs_email_last_send_date",
+        "notes_last_contacted",
+        "hubspot_owner_id",
+      ],
+      sorts:  [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
+      limit:  200,
+    }).catch(() => ({ results: [] }));
+
+    // OOO / auto-reply subject patterns — case-insensitive substring match
+    const OOO_PATTERNS = [
+      "automatic reply",
+      "auto reply",
+      "auto-reply",
+      "out of office",
+      "ooo:",
+      "on vacation",
+      "away from office",
+      "i am out of",
+      "i'm out of",
+      "currently out",
+      "away until",
+      "on leave",
+    ];
+
+    // Fetch incoming email subjects for reply contacts in one batch
+    // so we can filter out OOO without N+1 queries
+    const replyContactIds = (repliesData.results || []).map(c => c.id);
+    let oooContactIds = new Set();
+    let oooContactEmailDataFinal = {};
+    if (replyContactIds.length > 0) {
+      try {
+        // Search for INCOMING_EMAIL engagements for these contacts with OOO-like subjects
+        // We check all recent incoming emails for these contacts
+        const incomingEmails = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+          filterGroups: [{
+            filters: [
+              { propertyName: "hs_email_direction", operator: "EQ", value: "INCOMING_EMAIL" },
+              { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
+            ]
+          }],
+          properties: ["hs_email_subject", "hs_email_text", "hs_timestamp"],
+          sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
+          limit: 200,
+        }).catch(() => ({ results: [] }));
+
+        // For contacts that ONLY have OOO replies (no real replies), mark as OOO
+        // We do this by checking if subject starts with an OOO pattern
+        // and cross-referencing with the reply contacts
+        // Since we can't join easily, check subjects from results
+        // and fetch associated contacts
+        const oooEmailMap = {};
+        const oooEmailIds = (incomingEmails.results || [])
+          .filter(e => {
+            const subj = (e.properties?.hs_email_subject || "").toLowerCase();
+            return OOO_PATTERNS.some(p => subj.startsWith(p) || subj.includes(p));
+          })
+          .map(e => {
+            oooEmailMap[e.id] = {
+              subject:   e.properties?.hs_email_subject || null,
+              body:      e.properties?.hs_email_text    || null,
+              timestamp: e.properties?.hs_timestamp     || null,
+            };
+            return e.id;
+          });
+
+        if (oooEmailIds.length > 0) {
+          // Get contact associations for OOO emails
+          const assocData = await hsPost(user.userId, "/crm/v4/associations/emails/contacts/batch/read", {
+            inputs: oooEmailIds.slice(0, 100).map(id => ({ id })),
+          }).catch(() => ({ results: [] }));
+
+          // Build set of contact IDs that have OOO emails
+          const oooContactsWithOOO = new Set();
+          const oooContactEmailData = {};
+          for (const r of (assocData.results || [])) {
+            const emailData = oooEmailMap[r.from?.id] || {};
+            for (const assoc of (r.to || [])) {
+              const cid = String(assoc.toObjectId);
+              oooContactsWithOOO.add(cid);
+              if (!oooContactEmailData[cid] || (emailData.timestamp > (oooContactEmailData[cid].timestamp||""))) {
+                oooContactEmailData[cid] = emailData;
+              }
+            }
+          }
+
+          // Now fetch real (non-OOO) incoming emails for the same period
+          const realEmails = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+            filterGroups: [{
+              filters: [
+                { propertyName: "hs_email_direction", operator: "EQ", value: "INCOMING_EMAIL" },
+                { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
+              ]
+            }],
+            properties: ["hs_email_subject"],
+            limit: 200,
+          }).catch(() => ({ results: [] }));
+
+          const realEmailIds = (realEmails.results || [])
+            .filter(e => {
+              const subj = (e.properties?.hs_email_subject || "").toLowerCase();
+              return !OOO_PATTERNS.some(p => subj.startsWith(p) || subj.includes(p));
+            })
+            .map(e => e.id);
+
+          if (realEmailIds.length > 0) {
+            const realAssocData = await hsPost(user.userId, "/crm/v4/associations/emails/contacts/batch/read", {
+              inputs: realEmailIds.slice(0, 100).map(id => ({ id })),
+            }).catch(() => ({ results: [] }));
+
+            // Remove contacts from OOO list if they ALSO have a real reply
+            for (const r of (realAssocData.results || [])) {
+              for (const assoc of (r.to || [])) {
+                oooContactsWithOOO.delete(String(assoc.toObjectId));
+              }
+            }
+          }
+
+          oooContactIds         = oooContactsWithOOO;
+          oooContactEmailDataFinal = oooContactEmailData;
+        }
+      } catch (e) {
+        console.error("[tasks] OOO filter error:", e.message);
+      }
+    }
+
+    // OOO replies — contacts that only sent OOO auto-replies
+    const oooReplies = [...oooContactIds].map(cid => {
+      const c = (repliesData.results || []).find(r => String(r.id) === cid);
+      if (!c) return null;
+      const p    = c.properties || {};
+      const info = normalizeContact(c);
+      const ed   = oooContactEmailDataFinal[cid] || {};
+      const replyDate  = p.hs_sales_email_last_replied || p.hs_email_last_reply_date || null;
+      const waitingHours = replyDate ? Math.round((Date.now() - new Date(replyDate).getTime()) / 3600000) : 0;
+      return {
+        contactId:    cid, contact: info, replyDate, waitingHours,
+        subject:      ed.subject || null,
+        oooReturnDate: parseOooReturnDate(ed.body || ed.subject || ""),
+        replySource:  p.hs_sales_email_last_replied ? "sales" : "marketing",
+      };
+    }).filter(Boolean);
+
+    const repliesAwaitingResponse = (repliesData.results || [])
+      .map(c => {
+        const p = c.properties || {};
+        const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
+        const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
+        const replyTs      = Math.max(salesReplyTs, mktReplyTs);
+        if (replyTs === 0) return null;
+        const replyDate = replyTs === salesReplyTs ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
+
+        // Filter out contacts that only have OOO/auto-reply emails
+        if (oooContactIds.has(String(c.id))) return null;
+
+        // Check if YOU manually responded after the reply
+        const lastManualActivityTs = Math.max(
+          p.notes_last_contacted ? new Date(p.notes_last_contacted).getTime() : 0,
+        );
+
+        // Only exclude if a manual activity (logged call, note, meeting) happened after reply
+        if (lastManualActivityTs > replyTs) return null;
+
+        // Get contact owner info
+        const contactOwnerId   = p.hubspot_owner_id || null;
+        const contactOwnerName = contactOwnerId
+          ? Object.entries(OWNER_NAME_TO_ID).find(([, id]) => id === String(contactOwnerId))?.[0] || null
+          : null;
+
+        // For owner-based filtering (AEs): exclude contacts not owned by the selected rep.
+        // Skip this check for BDR-name filtering — BDR contacts are owned by AEs, not Chris,
+        // so hubspot_owner_id won't match. The assigned_bdr search filter already scoped correctly.
+        if (ownerIdList.length > 0 && assignedBdrList.length === 0 && contactOwnerId && !selectedOwnerIds.includes(String(contactOwnerId))) {
+          return null;
+        }
+
+        const info = normalizeContact(c);
+        return {
+          contactId:        c.id,
+          contact:          info,
+          replyDate,
+          contactOwner:     contactOwnerName,
+          isOwnedBySelected: selectedRepOwnerId ? String(contactOwnerId) === selectedRepOwnerId : false,
+          lastOutboundDate: null, // lastActivityTs removed — manual activity no longer tracked here
+          waitingHours:     Math.round((now - replyTs) / (1000 * 60 * 60)),
+          subject:          p.hs_email_last_email_name || null,
+          url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
+
+    // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
+    const seqFilterGroups = buildFilterGroups(qp, [
+      { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
+    ]);
+    const sequencesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+      filterGroups: seqFilterGroups,
+      properties: BASE_CONTACT_PROPS,
+      sorts:  [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "ASCENDING" }],
+      limit:  200,
+    }).catch(() => ({ results: [] }));
+
+    const upcomingSequences = (sequencesData.results || []).map(c => {
+      const p    = c.properties || {};
+      const info = normalizeContact(c);
+
+      // Best signal state for this contact
+      const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
+      const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
+      const clickTs      = Math.max(
+        p.hs_sales_email_last_clicked ? new Date(p.hs_sales_email_last_clicked).getTime() : 0,
+        p.hs_email_last_click_date    ? new Date(p.hs_email_last_click_date).getTime()    : 0,
+      );
+      const openTs = Math.max(
+        p.hs_sales_email_last_opened ? new Date(p.hs_sales_email_last_opened).getTime() : 0,
+        p.hs_email_last_open_date    ? new Date(p.hs_email_last_open_date).getTime()    : 0,
+      );
+      const replyTs = Math.max(salesReplyTs, mktReplyTs);
+
+      let signalLabel = "No recent activity";
+      if (replyTs > 0) signalLabel = "Replied";
+      else if (clickTs > 0) signalLabel = "Clicked link";
+      else if (openTs  > 0) signalLabel = "Opened";
+
+      return {
+        contactId:        c.id,
+        contact:          info,
+        sequenceId:       p.hs_latest_sequence_enrolled      || null,
+        sequenceLabel:    p.hs_latest_sequence_enrolled
+          ? `Sequence #${p.hs_latest_sequence_enrolled}`
+          : "Unknown sequence",
+        enrolledDate:     p.hs_latest_sequence_enrolled_date || null,
+        signal:           signalLabel,
+        lastEmailName:    p.hs_email_last_email_name         || null,
+        url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+      };
+    });
+
+    // ── Section 3: Due tasks (HubSpot tasks with date window) ─────────────
+    // Look up the current user's HubSpot owner ID for task filtering
+    let ownerIdForTasks = user.ownerId || null;
+    if (!ownerIdForTasks) {
+      try {
+        const meData = await hsGet(user.userId, "/crm/v3/owners/me", {});
+        ownerIdForTasks = meData?.id || null;
+      } catch { /* use null */ }
+    }
+
+    // If assigned_bdr filter is set, also look up that rep's owner ID
+    const repName = qp.assigned_bdr ? decodeURIComponent(qp.assigned_bdr).trim() : null;
+    let repOwnerId = ownerIdForTasks;
+    if (repName) {
+      try {
+        const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
+        const match = (ownersData.results || []).find(o =>
+          `${o.firstName||""} ${o.lastName||""}`.trim() === repName
+        );
+        if (match?.id) repOwnerId = match.id;
+      } catch { /* fall back to current user */ }
+    }
+
+    const taskOwnerFilter = repOwnerId
+      ? [{ propertyName: "hubspot_owner_id", operator: "EQ", value: String(repOwnerId) }]
+      : [];
+    const [upcomingTasksData, overdueTasksData] = await Promise.all([
+      hsPost(user.userId, "/crm/v3/objects/tasks/search", {
+        filterGroups: [{
+          filters: [
+            ...taskOwnerFilter,
+            { propertyName: "hs_task_status",   operator: "NOT_IN", values: ["COMPLETED", "DEFERRED"] },
+            { propertyName: "hs_timestamp",     operator: "GTE",    value: new Date(now).toISOString() },
+            { propertyName: "hs_timestamp",     operator: "LTE",    value: windowEnd },
+          ],
+        }],
+        properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
+        associations: ["contacts"],
+        sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
+        limit:  200,
+      }).catch(() => ({ results: [] })),
+
+      hsPost(user.userId, "/crm/v3/objects/tasks/search", {
+        filterGroups: [{
+          filters: [
+            ...taskOwnerFilter,
+            { propertyName: "hs_task_status",   operator: "NOT_IN", values: ["COMPLETED", "DEFERRED"] },
+            { propertyName: "hs_timestamp",     operator: "GTE",    value: overdueFrom },
+            { propertyName: "hs_timestamp",     operator: "LT",     value: new Date(now).toISOString() },
+          ],
+        }],
+        properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
+        associations: ["contacts"],
+        sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
+        limit:  200,
+      }).catch(() => ({ results: [] })),
+    ]);
+
+    // ── Batch-fetch contacts associated with these tasks so the queue
+    // can dedupe a task against other signals for the same contact ──────
+    const taskContactIds = [...new Set(
+      [...(upcomingTasksData.results || []), ...(overdueTasksData.results || [])]
+        .map(t => t.associations?.contacts?.results?.[0]?.id)
+        .filter(Boolean)
+    )];
+    const taskContactMap = {};
+    if (taskContactIds.length > 0) {
+      try {
+        const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+          properties: BASE_CONTACT_PROPS,
+          inputs: taskContactIds.map(id => ({ id })),
+        });
+        (batch.results || []).forEach(c => { taskContactMap[c.id] = normalizeContact(c); });
+      } catch { /* enrichment best-effort */ }
+    }
+
+    const normalizeTask = (t, overdue = false) => {
+      const contactId = t.associations?.contacts?.results?.[0]?.id || null;
+      return {
+        id:       t.id,
+        subject:  t.properties?.hs_task_subject  || "Untitled task",
+        status:   t.properties?.hs_task_status   || "NOT_STARTED",
+        type:     t.properties?.hs_task_type     || "TODO",
+        dueDate:  t.properties?.hs_timestamp     || null,
+        priority: t.properties?.hs_task_priority || "NONE",
+        body:     t.properties?.hs_task_body     || null,
+        overdue,
+        contactId,
+        contact: contactId ? (taskContactMap[contactId] || null) : null,
+        url: `https://app.hubspot.com/tasks/39921549/view/all/task/${t.id}`,
+      };
+    };
+
+    const dueTasks = [
+      ...(overdueTasksData.results  || []).map(t => normalizeTask(t, true)),
+      ...(upcomingTasksData.results || []).map(t => normalizeTask(t, false)),
+    ];
+
+    return {
+      repliesAwaitingResponse,
+      oooReplies,
+      upcomingSequences,
+      dueTasks,
+      meta: {
+        days,
+        counts: {
+          repliesAwaitingResponse: repliesAwaitingResponse.length,
+          upcomingSequences:       upcomingSequences.length,
+          dueTasks:                dueTasks.length,
+          overdueTasks:            (overdueTasksData.results || []).length,
+        },
+        filters: {
+          assigned_bdr: qp.assigned_bdr || null,
+          territory:    qp.territory    || null,
+        },
+      },
+    };
+}
+
+export async function computeRightNowQueue(userId, qp = {}) {
+    // ── Everything /tasks already knows how to compute ───────────────────
+    const taskData = await computeTaskQueue({ userId }, qp);
+
+    // repliesAwaitingResponse already carries replyDate + contactId —
+    // reshape into the exact signal shape scoreSignalForQueue expects so
+    // it gets the same reply-aging treatment as a live signal would.
+    const replySignals = (taskData.repliesAwaitingResponse || []).map(r => ({
+      id: `reply-${r.contactId}`,
+      type: "REPLY",
+      timestamp: r.replyDate,
+      score: 100,
+      label: "Replied",
+      contactId: r.contactId,
+      contact: r.contact,
+    }));
+
+    // dueTasks map directly onto scoreTaskForQueue's expected shape —
+    // contactId now comes from the task's HubSpot contact association,
+    // so a task and a signal for the same person collapse into one line.
+    const dueTasksForQueue = (taskData.dueTasks || []).map(t => ({
+      id: t.id,
+      dueDate: t.dueDate,
+      contactId: t.contactId,
+      contact: t.contact,
+      subject: t.subject,
+    }));
+
+    // ── OOO follow-ups: fire a one-time to-do per contact, same
+    // idempotency pattern as meeting confirmations, tracked in blob
+    // since we never write this back to HubSpot ──────────────────────────
+    const confirmedOooIds = await getConfirmedOooIds(userId);
+    for (const ooo of (taskData.oooReplies || [])) {
+      if (!confirmedOooIds.has(ooo.contactId)) {
+        await addTodo(userId, {
+          contactId: ooo.contactId,
+          text: `Follow up with ${ooo.contact?.name || "contact"} — back from OOO${ooo.oooReturnDate ? ` around ${ooo.oooReturnDate}` : ""}`,
+          autoDetected: true,
+          priority: "HIGH",
+          createdAt: new Date().toISOString(),
+        });
+        await addConfirmedOooId(userId, ooo.contactId, confirmedOooIds);
+        confirmedOooIds.add(ooo.contactId);
+      }
+    }
+
+    // ── Signals: same 15-minute realtime window as /signals/recent ──────
+    const sinceMs = Date.now() - 15 * 60 * 1000;
+    const eventsData = await hsGet(userId, "/email/public/v1/events", {
+      startTimestamp: sinceMs,
+      limit: 100,
+    }).catch(() => ({ events: [] }));
+
+    const rawEvents = (eventsData.events || [])
+      .filter(ev => ["OPEN", "CLICK", "REPLY"].includes(ev.type));
+
+    const eventContactIds = [...new Set(
+      rawEvents.map(ev => ev.contactId ? String(ev.contactId) : null).filter(Boolean)
+    )];
+
+    // ── Meetings: HubSpot (last 3 days through next 14) ──────────────────
+    const meetingWindowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    const meetingWindowEnd   = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+
+    const meetData = await hsPost(userId, "/crm/v3/objects/meetings/search", {
+      filterGroups: [{
+        filters: [
+          { propertyName: "hs_meeting_start_time", operator: "GTE", value: meetingWindowStart.toISOString() },
+          { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
+        ],
+      }],
+      properties: ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time"],
+      associations: ["contacts"],
+      limit: 100,
+    }).catch(() => ({ results: [] }));
+
+    const hsMeetingsRaw = meetData.results || [];
+    const meetingContactIds = [...new Set(
+      hsMeetingsRaw
+        .map(m => m.associations?.contacts?.results?.[0]?.id)
+        .filter(Boolean)
+    )];
+
+    // ── Batch-fetch all contacts we need in one call (signals + meetings) ─
+    const allContactIds = [...new Set([...eventContactIds, ...meetingContactIds])];
+    const contactMap = {};
+    const contactsByEmail = {};
+    if (allContactIds.length > 0) {
+      try {
+        const batch = await hsPost(userId, "/crm/v3/objects/contacts/batch/read", {
+          properties: BASE_CONTACT_PROPS,
+          inputs: allContactIds.map(id => ({ id })),
+        });
+        (batch.results || []).forEach(c => {
+          const info = normalizeContact(c);
+          contactMap[c.id] = info;
+          if (info.email) contactsByEmail[info.email.toLowerCase()] = info;
+        });
+      } catch { /* enrichment best-effort, same as /signals/recent */ }
+    }
+
+    // ── Build signals in the exact shape rightNowQueue.js expects ────────
+    const signals = rawEvents
+      .map(ev => {
+        const contactId = ev.contactId ? String(ev.contactId) : null;
+        const contact = contactId ? (contactMap[contactId] || null) : null;
+        const eventType = ev.type;
+        let score = 0, label = "";
+        if (eventType === "REPLY") {
+          if (isOooReply(ev.subject || null, null)) return null; // handled via OOO to-do flow, not here
+          score = 100; label = "Replied";
+        } else if (eventType === "CLICK") { score = 70; label = "Clicked link"; }
+        else if (eventType === "OPEN")   { score = 40; label = "Opened"; }
+
+        const botCheck = detectBot({
+          filteredEvent: false, sentAt: null,
+          openedAt: eventType === "OPEN" ? ev.created : null,
+          numOpens: eventType === "OPEN" ? 1 : 0,
+          numClicks: eventType === "CLICK" ? 1 : 0,
+          replied: eventType === "REPLY",
+        });
+        if (botCheck.isBot && eventType === "OPEN") return null;
+
+        return {
+          id: `rt-${ev.id || ev.created}`,
+          type: eventType,
+          timestamp: ev.created || null,
+          score, label, contactId, contact,
+        };
+      })
+      .filter(Boolean);
+
+    // ── Attach contactId to each HubSpot meeting from its association ────
+    const hsMeetings = hsMeetingsRaw.map(m => ({
+      ...m,
+      contactId: m.associations?.contacts?.results?.[0]?.id || null,
+    }));
+
+    // ── Outlook meetings, same window ────────────────────────────────────
+    const outlookEvents = await getOutlookCalendarEvents(userId, meetingWindowStart, meetingWindowEnd);
+
+    // ── Merge, dedup, score ───────────────────────────────────────────────
+    const mergedMeetings = mergeMeetings(hsMeetings, outlookEvents, contactMap, contactsByEmail);
+
+    // ── Confirmation to-do: fire once per meeting, 3 days out ────────────
+    const confirmedIds = await getConfirmedMeetingIds(userId);
+    for (const meeting of mergedMeetings) {
+      meeting.confirmationTaskCreated = confirmedIds.has(meeting.id);
+      if (needsConfirmationTask(meeting)) {
+        const todo = buildConfirmationTodo(meeting);
+        await addTodo(userId, todo);
+        await addConfirmedMeetingId(userId, meeting.id, confirmedIds);
+        confirmedIds.add(meeting.id);
+        meeting.confirmationTaskCreated = true;
+      }
+    }
+
+    // ── To-dos ────────────────────────────────────────────────────────────
+    const todos = await getTodos(userId);
+
+    const queue = buildRightNowQueue({
+      signals: [...signals, ...replySignals],
+      tasks: dueTasksForQueue,
+      todos,
+      meetings: mergedMeetings.map(m => ({
+        id: m.id,
+        startTime: m.startTime,
+        contactId: m.contactId,
+        contact: m.contact,
+        subject: m.subject,
+      })),
+    });
+
+    return queue;
+}
+
+// ─── Active user registry ───────────────────────────────────────────────────
+// The Top 5 scheduled function has no logged-in user, so it needs some way
+// to know which userIds exist. Rather than a separate onboarding step, every
+// authenticated request quietly registers its own userId here (best-effort,
+// never blocks the response). Scheduler reads this list once per run.
+function activeUsersBlobUrl() {
+  const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/active-users.json${sas}`;
+}
+async function registerActiveUser(userId) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN || !userId) return;
+  try {
+    const res = await fetch(activeUsersBlobUrl());
+    const data = res.ok ? await res.json() : { userIds: [] };
+    if ((data.userIds || []).includes(userId)) return; // already known, skip the write
+    const updated = [...new Set([...(data.userIds || []), userId])];
+    await fetch(activeUsersBlobUrl(), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+      body: JSON.stringify({ userIds: updated }),
+    });
+  } catch (e) { console.error("[active-users] registration failed:", e.message); }
+}
+export async function getActiveUserIds() {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return [];
+  try {
+    const res = await fetch(activeUsersBlobUrl());
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.userIds || [];
+  } catch { return []; }
+}
+
 // ─── Main router ──────────────────────────────────────────────────────────────
 
 export const handler = async (event, context) => {
@@ -1030,6 +1652,7 @@ export const handler = async (event, context) => {
   }
 
   return withAuth(async (event, context, user) => {
+    registerActiveUser(user.userId); // best-effort, not awaited — never blocks the response
     const path   = rawPath;
     const method = event.httpMethod;
 
@@ -1222,418 +1845,6 @@ export const handler = async (event, context) => {
     // Query params:
     //   days=7|14|21|30     (default: 14) -- applies to all three sections
     //   assigned_bdr=name   (optional)    -- filters replies and sequences by rep
-    async function computeTaskQueue(user, qp) {
-        const days    = Math.min(parseInt(qp.days || "14", 10), 30);
-        const now     = Date.now();
-        const sinceISO    = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
-        const windowEnd   = new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
-        const overdueFrom = new Date(now - 90  * 24 * 60 * 60 * 1000).toISOString();
-
-        const customFilters = buildCustomFilters(qp); // picks up assigned_bdr, territory etc.
-
-        // ── Section 1: Replies awaiting response ───────────────────────────────
-        // Logic: find contacts where a reply exists in the window AND no outbound
-        // activity was sent AFTER the reply BY ANYONE (not just the selected rep).
-        //
-        // Owner-aware: fetch hubspot_owner_id on each contact. If the contact owner
-        // (AE) sent activity after the reply, exclude it -- AE is handling it.
-        // Selected rep filter (assigned_bdr) determines whose queue we're showing.
-
-        // Build owner ID lookup from the known owner list for the portal
-        const OWNER_NAME_TO_ID = {};
-        try {
-          const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
-          for (const o of (ownersData.results || [])) {
-            const name = `${o.firstName||""} ${o.lastName||""}`.trim();
-            if (name) OWNER_NAME_TO_ID[name] = String(o.id);
-          }
-        } catch { /* use empty map */ }
-
-        // assigned_bdr: comma-separated BDR names
-        // owner_id: comma-separated owner IDs for non-BDR members
-        const assignedBdrList = qp.assigned_bdr
-          ? decodeURIComponent(qp.assigned_bdr).split(',').map(s => s.trim()).filter(Boolean)
-          : [];
-        const ownerIdList = qp.owner_id
-          ? String(qp.owner_id).split(',').map(s => s.trim()).filter(Boolean)
-          : [];
-
-        // All selected owner IDs (from both bdr names and direct owner_id param)
-        const selectedOwnerIds = [
-          ...assignedBdrList.map(name => OWNER_NAME_TO_ID[name]).filter(Boolean),
-          ...ownerIdList,
-        ];
-        const selectedRepOwnerId = selectedOwnerIds.length === 1 ? selectedOwnerIds[0] : null;
-
-        // Build filter groups for replies -- OR between assigned_bdr and hubspot_owner_id
-        const replyFilterGroups = buildFilterGroups(qp).flatMap(g => [
-          { filters: [{ propertyName: "hs_sales_email_last_replied", operator: "GTE", value: sinceISO }, ...g.filters] },
-          { filters: [{ propertyName: "hs_email_last_reply_date",    operator: "GTE", value: sinceISO }, ...g.filters] },
-        ]);
-
-        const repliesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-          filterGroups: replyFilterGroups,
-          properties: [
-            ...BASE_CONTACT_PROPS,
-            "hs_sales_email_last_replied",
-            "hs_email_last_reply_date",
-            "hs_last_sales_activity_timestamp",
-            "hs_email_last_send_date",
-            "notes_last_contacted",
-            "hubspot_owner_id",
-          ],
-          sorts:  [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
-          limit:  200,
-        }).catch(() => ({ results: [] }));
-
-        // OOO / auto-reply subject patterns — case-insensitive substring match
-        const OOO_PATTERNS = [
-          "automatic reply",
-          "auto reply",
-          "auto-reply",
-          "out of office",
-          "ooo:",
-          "on vacation",
-          "away from office",
-          "i am out of",
-          "i'm out of",
-          "currently out",
-          "away until",
-          "on leave",
-        ];
-
-        // Fetch incoming email subjects for reply contacts in one batch
-        // so we can filter out OOO without N+1 queries
-        const replyContactIds = (repliesData.results || []).map(c => c.id);
-        let oooContactIds = new Set();
-        let oooContactEmailDataFinal = {};
-        if (replyContactIds.length > 0) {
-          try {
-            // Search for INCOMING_EMAIL engagements for these contacts with OOO-like subjects
-            // We check all recent incoming emails for these contacts
-            const incomingEmails = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
-              filterGroups: [{
-                filters: [
-                  { propertyName: "hs_email_direction", operator: "EQ", value: "INCOMING_EMAIL" },
-                  { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
-                ]
-              }],
-              properties: ["hs_email_subject", "hs_email_text", "hs_timestamp"],
-              sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
-              limit: 200,
-            }).catch(() => ({ results: [] }));
-
-            // For contacts that ONLY have OOO replies (no real replies), mark as OOO
-            // We do this by checking if subject starts with an OOO pattern
-            // and cross-referencing with the reply contacts
-            // Since we can't join easily, check subjects from results
-            // and fetch associated contacts
-            const oooEmailMap = {};
-            const oooEmailIds = (incomingEmails.results || [])
-              .filter(e => {
-                const subj = (e.properties?.hs_email_subject || "").toLowerCase();
-                return OOO_PATTERNS.some(p => subj.startsWith(p) || subj.includes(p));
-              })
-              .map(e => {
-                oooEmailMap[e.id] = {
-                  subject:   e.properties?.hs_email_subject || null,
-                  body:      e.properties?.hs_email_text    || null,
-                  timestamp: e.properties?.hs_timestamp     || null,
-                };
-                return e.id;
-              });
-
-            if (oooEmailIds.length > 0) {
-              // Get contact associations for OOO emails
-              const assocData = await hsPost(user.userId, "/crm/v4/associations/emails/contacts/batch/read", {
-                inputs: oooEmailIds.slice(0, 100).map(id => ({ id })),
-              }).catch(() => ({ results: [] }));
-
-              // Build set of contact IDs that have OOO emails
-              const oooContactsWithOOO = new Set();
-              const oooContactEmailData = {};
-              for (const r of (assocData.results || [])) {
-                const emailData = oooEmailMap[r.from?.id] || {};
-                for (const assoc of (r.to || [])) {
-                  const cid = String(assoc.toObjectId);
-                  oooContactsWithOOO.add(cid);
-                  if (!oooContactEmailData[cid] || (emailData.timestamp > (oooContactEmailData[cid].timestamp||""))) {
-                    oooContactEmailData[cid] = emailData;
-                  }
-                }
-              }
-
-              // Now fetch real (non-OOO) incoming emails for the same period
-              const realEmails = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
-                filterGroups: [{
-                  filters: [
-                    { propertyName: "hs_email_direction", operator: "EQ", value: "INCOMING_EMAIL" },
-                    { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
-                  ]
-                }],
-                properties: ["hs_email_subject"],
-                limit: 200,
-              }).catch(() => ({ results: [] }));
-
-              const realEmailIds = (realEmails.results || [])
-                .filter(e => {
-                  const subj = (e.properties?.hs_email_subject || "").toLowerCase();
-                  return !OOO_PATTERNS.some(p => subj.startsWith(p) || subj.includes(p));
-                })
-                .map(e => e.id);
-
-              if (realEmailIds.length > 0) {
-                const realAssocData = await hsPost(user.userId, "/crm/v4/associations/emails/contacts/batch/read", {
-                  inputs: realEmailIds.slice(0, 100).map(id => ({ id })),
-                }).catch(() => ({ results: [] }));
-
-                // Remove contacts from OOO list if they ALSO have a real reply
-                for (const r of (realAssocData.results || [])) {
-                  for (const assoc of (r.to || [])) {
-                    oooContactsWithOOO.delete(String(assoc.toObjectId));
-                  }
-                }
-              }
-
-              oooContactIds         = oooContactsWithOOO;
-              oooContactEmailDataFinal = oooContactEmailData;
-            }
-          } catch (e) {
-            console.error("[tasks] OOO filter error:", e.message);
-          }
-        }
-
-        // OOO replies — contacts that only sent OOO auto-replies
-        const oooReplies = [...oooContactIds].map(cid => {
-          const c = (repliesData.results || []).find(r => String(r.id) === cid);
-          if (!c) return null;
-          const p    = c.properties || {};
-          const info = normalizeContact(c);
-          const ed   = oooContactEmailDataFinal[cid] || {};
-          const replyDate  = p.hs_sales_email_last_replied || p.hs_email_last_reply_date || null;
-          const waitingHours = replyDate ? Math.round((Date.now() - new Date(replyDate).getTime()) / 3600000) : 0;
-          return {
-            contactId:    cid, contact: info, replyDate, waitingHours,
-            subject:      ed.subject || null,
-            oooReturnDate: parseOooReturnDate(ed.body || ed.subject || ""),
-            replySource:  p.hs_sales_email_last_replied ? "sales" : "marketing",
-          };
-        }).filter(Boolean);
-
-        const repliesAwaitingResponse = (repliesData.results || [])
-          .map(c => {
-            const p = c.properties || {};
-            const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
-            const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
-            const replyTs      = Math.max(salesReplyTs, mktReplyTs);
-            if (replyTs === 0) return null;
-            const replyDate = replyTs === salesReplyTs ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
-
-            // Filter out contacts that only have OOO/auto-reply emails
-            if (oooContactIds.has(String(c.id))) return null;
-
-            // Check if YOU manually responded after the reply
-            const lastManualActivityTs = Math.max(
-              p.notes_last_contacted ? new Date(p.notes_last_contacted).getTime() : 0,
-            );
-
-            // Only exclude if a manual activity (logged call, note, meeting) happened after reply
-            if (lastManualActivityTs > replyTs) return null;
-
-            // Get contact owner info
-            const contactOwnerId   = p.hubspot_owner_id || null;
-            const contactOwnerName = contactOwnerId
-              ? Object.entries(OWNER_NAME_TO_ID).find(([, id]) => id === String(contactOwnerId))?.[0] || null
-              : null;
-
-            // For owner-based filtering (AEs): exclude contacts not owned by the selected rep.
-            // Skip this check for BDR-name filtering — BDR contacts are owned by AEs, not Chris,
-            // so hubspot_owner_id won't match. The assigned_bdr search filter already scoped correctly.
-            if (ownerIdList.length > 0 && assignedBdrList.length === 0 && contactOwnerId && !selectedOwnerIds.includes(String(contactOwnerId))) {
-              return null;
-            }
-
-            const info = normalizeContact(c);
-            return {
-              contactId:        c.id,
-              contact:          info,
-              replyDate,
-              contactOwner:     contactOwnerName,
-              isOwnedBySelected: selectedRepOwnerId ? String(contactOwnerId) === selectedRepOwnerId : false,
-              lastOutboundDate: null, // lastActivityTs removed — manual activity no longer tracked here
-              waitingHours:     Math.round((now - replyTs) / (1000 * 60 * 60)),
-              subject:          p.hs_email_last_email_name || null,
-              url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
-            };
-          })
-          .filter(Boolean)
-          .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
-
-        // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
-        const seqFilterGroups = buildFilterGroups(qp, [
-          { propertyName: "hs_sequences_is_enrolled", operator: "EQ", value: "true" },
-        ]);
-        const sequencesData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
-          filterGroups: seqFilterGroups,
-          properties: BASE_CONTACT_PROPS,
-          sorts:  [{ propertyName: "hs_latest_sequence_enrolled_date", direction: "ASCENDING" }],
-          limit:  200,
-        }).catch(() => ({ results: [] }));
-
-        const upcomingSequences = (sequencesData.results || []).map(c => {
-          const p    = c.properties || {};
-          const info = normalizeContact(c);
-
-          // Best signal state for this contact
-          const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
-          const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
-          const clickTs      = Math.max(
-            p.hs_sales_email_last_clicked ? new Date(p.hs_sales_email_last_clicked).getTime() : 0,
-            p.hs_email_last_click_date    ? new Date(p.hs_email_last_click_date).getTime()    : 0,
-          );
-          const openTs = Math.max(
-            p.hs_sales_email_last_opened ? new Date(p.hs_sales_email_last_opened).getTime() : 0,
-            p.hs_email_last_open_date    ? new Date(p.hs_email_last_open_date).getTime()    : 0,
-          );
-          const replyTs = Math.max(salesReplyTs, mktReplyTs);
-
-          let signalLabel = "No recent activity";
-          if (replyTs > 0) signalLabel = "Replied";
-          else if (clickTs > 0) signalLabel = "Clicked link";
-          else if (openTs  > 0) signalLabel = "Opened";
-
-          return {
-            contactId:        c.id,
-            contact:          info,
-            sequenceId:       p.hs_latest_sequence_enrolled      || null,
-            sequenceLabel:    p.hs_latest_sequence_enrolled
-              ? `Sequence #${p.hs_latest_sequence_enrolled}`
-              : "Unknown sequence",
-            enrolledDate:     p.hs_latest_sequence_enrolled_date || null,
-            signal:           signalLabel,
-            lastEmailName:    p.hs_email_last_email_name         || null,
-            url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
-          };
-        });
-
-        // ── Section 3: Due tasks (HubSpot tasks with date window) ─────────────
-        // Look up the current user's HubSpot owner ID for task filtering
-        let ownerIdForTasks = user.ownerId || null;
-        if (!ownerIdForTasks) {
-          try {
-            const meData = await hsGet(user.userId, "/crm/v3/owners/me", {});
-            ownerIdForTasks = meData?.id || null;
-          } catch { /* use null */ }
-        }
-
-        // If assigned_bdr filter is set, also look up that rep's owner ID
-        const repName = qp.assigned_bdr ? decodeURIComponent(qp.assigned_bdr).trim() : null;
-        let repOwnerId = ownerIdForTasks;
-        if (repName) {
-          try {
-            const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 });
-            const match = (ownersData.results || []).find(o =>
-              `${o.firstName||""} ${o.lastName||""}`.trim() === repName
-            );
-            if (match?.id) repOwnerId = match.id;
-          } catch { /* fall back to current user */ }
-        }
-
-        const taskOwnerFilter = repOwnerId
-          ? [{ propertyName: "hubspot_owner_id", operator: "EQ", value: String(repOwnerId) }]
-          : [];
-        const [upcomingTasksData, overdueTasksData] = await Promise.all([
-          hsPost(user.userId, "/crm/v3/objects/tasks/search", {
-            filterGroups: [{
-              filters: [
-                ...taskOwnerFilter,
-                { propertyName: "hs_task_status",   operator: "NOT_IN", values: ["COMPLETED", "DEFERRED"] },
-                { propertyName: "hs_timestamp",     operator: "GTE",    value: new Date(now).toISOString() },
-                { propertyName: "hs_timestamp",     operator: "LTE",    value: windowEnd },
-              ],
-            }],
-            properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
-            associations: ["contacts"],
-            sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
-            limit:  200,
-          }).catch(() => ({ results: [] })),
-
-          hsPost(user.userId, "/crm/v3/objects/tasks/search", {
-            filterGroups: [{
-              filters: [
-                ...taskOwnerFilter,
-                { propertyName: "hs_task_status",   operator: "NOT_IN", values: ["COMPLETED", "DEFERRED"] },
-                { propertyName: "hs_timestamp",     operator: "GTE",    value: overdueFrom },
-                { propertyName: "hs_timestamp",     operator: "LT",     value: new Date(now).toISOString() },
-              ],
-            }],
-            properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
-            associations: ["contacts"],
-            sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
-            limit:  200,
-          }).catch(() => ({ results: [] })),
-        ]);
-
-        // ── Batch-fetch contacts associated with these tasks so the queue
-        // can dedupe a task against other signals for the same contact ──────
-        const taskContactIds = [...new Set(
-          [...(upcomingTasksData.results || []), ...(overdueTasksData.results || [])]
-            .map(t => t.associations?.contacts?.results?.[0]?.id)
-            .filter(Boolean)
-        )];
-        const taskContactMap = {};
-        if (taskContactIds.length > 0) {
-          try {
-            const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-              properties: BASE_CONTACT_PROPS,
-              inputs: taskContactIds.map(id => ({ id })),
-            });
-            (batch.results || []).forEach(c => { taskContactMap[c.id] = normalizeContact(c); });
-          } catch { /* enrichment best-effort */ }
-        }
-
-        const normalizeTask = (t, overdue = false) => {
-          const contactId = t.associations?.contacts?.results?.[0]?.id || null;
-          return {
-            id:       t.id,
-            subject:  t.properties?.hs_task_subject  || "Untitled task",
-            status:   t.properties?.hs_task_status   || "NOT_STARTED",
-            type:     t.properties?.hs_task_type     || "TODO",
-            dueDate:  t.properties?.hs_timestamp     || null,
-            priority: t.properties?.hs_task_priority || "NONE",
-            body:     t.properties?.hs_task_body     || null,
-            overdue,
-            contactId,
-            contact: contactId ? (taskContactMap[contactId] || null) : null,
-            url: `https://app.hubspot.com/tasks/39921549/view/all/task/${t.id}`,
-          };
-        };
-
-        const dueTasks = [
-          ...(overdueTasksData.results  || []).map(t => normalizeTask(t, true)),
-          ...(upcomingTasksData.results || []).map(t => normalizeTask(t, false)),
-        ];
-
-        return {
-          repliesAwaitingResponse,
-          oooReplies,
-          upcomingSequences,
-          dueTasks,
-          meta: {
-            days,
-            counts: {
-              repliesAwaitingResponse: repliesAwaitingResponse.length,
-              upcomingSequences:       upcomingSequences.length,
-              dueTasks:                dueTasks.length,
-              overdueTasks:            (overdueTasksData.results || []).length,
-            },
-            filters: {
-              assigned_bdr: qp.assigned_bdr || null,
-              territory:    qp.territory    || null,
-            },
-          },
-        };
-    }
 
     if (method === "GET" && path === "/tasks") {
       try {
@@ -6119,184 +6330,75 @@ export const handler = async (event, context) => {
     // Reuses computeTaskQueue — the exact same logic /tasks already runs —
     // so replies-awaiting-response and due tasks can't drift out of sync
     // between the two views.
+
     if (method === "GET" && path === "/right-now") {
       try {
-        // ── Everything /tasks already knows how to compute ───────────────────
-        const taskData = await computeTaskQueue(user, qp);
-
-        // repliesAwaitingResponse already carries replyDate + contactId —
-        // reshape into the exact signal shape scoreSignalForQueue expects so
-        // it gets the same reply-aging treatment as a live signal would.
-        const replySignals = (taskData.repliesAwaitingResponse || []).map(r => ({
-          id: `reply-${r.contactId}`,
-          type: "REPLY",
-          timestamp: r.replyDate,
-          score: 100,
-          label: "Replied",
-          contactId: r.contactId,
-          contact: r.contact,
-        }));
-
-        // dueTasks map directly onto scoreTaskForQueue's expected shape —
-        // contactId now comes from the task's HubSpot contact association,
-        // so a task and a signal for the same person collapse into one line.
-        const dueTasksForQueue = (taskData.dueTasks || []).map(t => ({
-          id: t.id,
-          dueDate: t.dueDate,
-          contactId: t.contactId,
-          contact: t.contact,
-          subject: t.subject,
-        }));
-
-        // ── OOO follow-ups: fire a one-time to-do per contact, same
-        // idempotency pattern as meeting confirmations, tracked in blob
-        // since we never write this back to HubSpot ──────────────────────────
-        const confirmedOooIds = await getConfirmedOooIds(user.userId);
-        for (const ooo of (taskData.oooReplies || [])) {
-          if (!confirmedOooIds.has(ooo.contactId)) {
-            await addTodo(user.userId, {
-              contactId: ooo.contactId,
-              text: `Follow up with ${ooo.contact?.name || "contact"} — back from OOO${ooo.oooReturnDate ? ` around ${ooo.oooReturnDate}` : ""}`,
-              autoDetected: true,
-              priority: "HIGH",
-              createdAt: new Date().toISOString(),
-            });
-            await addConfirmedOooId(user.userId, ooo.contactId, confirmedOooIds);
-            confirmedOooIds.add(ooo.contactId);
-          }
-        }
-
-        // ── Signals: same 15-minute realtime window as /signals/recent ──────
-        const sinceMs = Date.now() - 15 * 60 * 1000;
-        const eventsData = await hsGet(user.userId, "/email/public/v1/events", {
-          startTimestamp: sinceMs,
-          limit: 100,
-        }).catch(() => ({ events: [] }));
-
-        const rawEvents = (eventsData.events || [])
-          .filter(ev => ["OPEN", "CLICK", "REPLY"].includes(ev.type));
-
-        const eventContactIds = [...new Set(
-          rawEvents.map(ev => ev.contactId ? String(ev.contactId) : null).filter(Boolean)
-        )];
-
-        // ── Meetings: HubSpot (last 3 days through next 14) ──────────────────
-        const meetingWindowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-        const meetingWindowEnd   = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
-
-        const meetData = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
-          filterGroups: [{
-            filters: [
-              { propertyName: "hs_meeting_start_time", operator: "GTE", value: meetingWindowStart.toISOString() },
-              { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
-            ],
-          }],
-          properties: ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time"],
-          associations: ["contacts"],
-          limit: 100,
-        }).catch(() => ({ results: [] }));
-
-        const hsMeetingsRaw = meetData.results || [];
-        const meetingContactIds = [...new Set(
-          hsMeetingsRaw
-            .map(m => m.associations?.contacts?.results?.[0]?.id)
-            .filter(Boolean)
-        )];
-
-        // ── Batch-fetch all contacts we need in one call (signals + meetings) ─
-        const allContactIds = [...new Set([...eventContactIds, ...meetingContactIds])];
-        const contactMap = {};
-        const contactsByEmail = {};
-        if (allContactIds.length > 0) {
-          try {
-            const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
-              properties: BASE_CONTACT_PROPS,
-              inputs: allContactIds.map(id => ({ id })),
-            });
-            (batch.results || []).forEach(c => {
-              const info = normalizeContact(c);
-              contactMap[c.id] = info;
-              if (info.email) contactsByEmail[info.email.toLowerCase()] = info;
-            });
-          } catch { /* enrichment best-effort, same as /signals/recent */ }
-        }
-
-        // ── Build signals in the exact shape rightNowQueue.js expects ────────
-        const signals = rawEvents
-          .map(ev => {
-            const contactId = ev.contactId ? String(ev.contactId) : null;
-            const contact = contactId ? (contactMap[contactId] || null) : null;
-            const eventType = ev.type;
-            let score = 0, label = "";
-            if (eventType === "REPLY") {
-              if (isOooReply(ev.subject || null, null)) return null; // handled via OOO to-do flow, not here
-              score = 100; label = "Replied";
-            } else if (eventType === "CLICK") { score = 70; label = "Clicked link"; }
-            else if (eventType === "OPEN")   { score = 40; label = "Opened"; }
-
-            const botCheck = detectBot({
-              filteredEvent: false, sentAt: null,
-              openedAt: eventType === "OPEN" ? ev.created : null,
-              numOpens: eventType === "OPEN" ? 1 : 0,
-              numClicks: eventType === "CLICK" ? 1 : 0,
-              replied: eventType === "REPLY",
-            });
-            if (botCheck.isBot && eventType === "OPEN") return null;
-
-            return {
-              id: `rt-${ev.id || ev.created}`,
-              type: eventType,
-              timestamp: ev.created || null,
-              score, label, contactId, contact,
-            };
-          })
-          .filter(Boolean);
-
-        // ── Attach contactId to each HubSpot meeting from its association ────
-        const hsMeetings = hsMeetingsRaw.map(m => ({
-          ...m,
-          contactId: m.associations?.contacts?.results?.[0]?.id || null,
-        }));
-
-        // ── Outlook meetings, same window ────────────────────────────────────
-        const outlookEvents = await getOutlookCalendarEvents(user.userId, meetingWindowStart, meetingWindowEnd);
-
-        // ── Merge, dedup, score ───────────────────────────────────────────────
-        const mergedMeetings = mergeMeetings(hsMeetings, outlookEvents, contactMap, contactsByEmail);
-
-        // ── Confirmation to-do: fire once per meeting, 3 days out ────────────
-        const confirmedIds = await getConfirmedMeetingIds(user.userId);
-        for (const meeting of mergedMeetings) {
-          meeting.confirmationTaskCreated = confirmedIds.has(meeting.id);
-          if (needsConfirmationTask(meeting)) {
-            const todo = buildConfirmationTodo(meeting);
-            await addTodo(user.userId, todo);
-            await addConfirmedMeetingId(user.userId, meeting.id, confirmedIds);
-            confirmedIds.add(meeting.id);
-            meeting.confirmationTaskCreated = true;
-          }
-        }
-
-        // ── To-dos ────────────────────────────────────────────────────────────
-        const todos = await getTodos(user.userId);
-
-        const queue = buildRightNowQueue({
-          signals: [...signals, ...replySignals],
-          tasks: dueTasksForQueue,
-          todos,
-          meetings: mergedMeetings.map(m => ({
-            id: m.id,
-            startTime: m.startTime,
-            contactId: m.contactId,
-            contact: m.contact,
-            subject: m.subject,
-          })),
-        });
-
+        const queue = await computeRightNowQueue(user.userId, qp);
         return ok({ queue });
       } catch (err) {
         console.error("[right-now] Error:", err.message);
         return error(500, `Right now error: ${err.message}`);
+      }
+    }
+
+    // GET /top5 — read the cached Top 5 picks from the last scheduled run
+    // (8am / 1pm ET). This never calls Claude itself; the scheduler writes
+    // this blob, this route just reads it.
+    if (method === "GET" && path === "/top5") {
+      try {
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ picks: [], generatedAt: null });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/top5-${user.userId}.json${sas}`;
+        const res = await fetch(url);
+        if (!res.ok) return ok({ picks: [], generatedAt: null });
+        const data = await res.json();
+        return ok(data);
+      } catch (err) {
+        return ok({ picks: [], generatedAt: null, error: err.message });
+      }
+    }
+
+    // POST /pin   { itemId }  — rep pins something to the top of their Top 5,
+    //   instantly, independent of the twice-daily AI refresh.
+    // DELETE /pin/{itemId}    — unpin.
+    // Stored per-user so pins survive a page reload.
+    if (method === "POST" && path === "/pin") {
+      try {
+        const body = JSON.parse(event.body || "{}");
+        if (!body.itemId) return error(400, "itemId is required");
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ pinned: false });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pinned-${user.userId}.json${sas}`;
+        const res = await fetch(url);
+        const data = res.ok ? await res.json() : { pinnedIds: [] };
+        const updated = [...new Set([...(data.pinnedIds || []), body.itemId])];
+        await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+          body: JSON.stringify({ pinnedIds: updated }),
+        });
+        return ok({ pinned: true, pinnedIds: updated });
+      } catch (err) {
+        return error(500, `Pin error: ${err.message}`);
+      }
+    }
+    if (method === "DELETE" && path.startsWith("/pin/")) {
+      try {
+        const itemId = decodeURIComponent(path.replace("/pin/", ""));
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ pinned: false });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pinned-${user.userId}.json${sas}`;
+        const res = await fetch(url);
+        const data = res.ok ? await res.json() : { pinnedIds: [] };
+        const updated = (data.pinnedIds || []).filter(id => id !== itemId);
+        await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+          body: JSON.stringify({ pinnedIds: updated }),
+        });
+        return ok({ pinned: false, pinnedIds: updated });
+      } catch (err) {
+        return error(500, `Unpin error: ${err.message}`);
       }
     }
 
