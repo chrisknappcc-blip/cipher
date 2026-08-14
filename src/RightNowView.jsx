@@ -60,6 +60,22 @@ function timeAgo(iso) {
   return `${Math.round(hours / 24)}d ago`
 }
 
+// Lightweight frontend mirror of the backend's bounce/OOO detection — used
+// only for display labeling here, not scoring (the real filtering already
+// happens server-side before an item is ever scored as a reply).
+function isBounceLike(subject, body) {
+  const s = (subject || '').toLowerCase()
+  const b = (body || '').toLowerCase()
+  return /^(undeliverable|delivery status notification|mail delivery|returned mail|delivery failed|message (could not|was not) delivered|failure notice)/.test(s)
+    || /mailer-daemon|postmaster@|could not be delivered|permanent failure/.test(b)
+}
+function isOooLike(subject, body) {
+  const s = (subject || '').toLowerCase()
+  const b = (body || '').toLowerCase()
+  return /^(automatic reply|auto.?reply|out of (the )?office|ooo\s*:|on vacation|away from)/.test(s)
+    || /i('m| am) (currently )?(out|away|on vacation)|i('ll| will) be back/.test(b)
+}
+
 // Cheap keyword heuristic, NOT AI content understanding — flags that a reply
 // might be waiting on an answer because it contains a question mark. Real
 // detection would need an actual model call reading the email body, which is
@@ -302,10 +318,14 @@ export default function RightNowView({ getToken }) {
   const emailEngagements = useMemo(() => {
     if (!contactDetail?.engagements) return []
     return contactDetail.engagements
-      .filter(e => e.type === 'EMAIL' || e.subject)
+      // Strictly EMAIL type — the old `|| e.subject` fallback was the bug:
+      // a Gong-logged MEETING engagement has a subject too, so it was
+      // slipping in and displaying as if it were an email.
+      .filter(e => e.type === 'EMAIL' && !/^\[Gong\]/i.test(e.subject || ''))
       .map(e => ({
         ...e,
-        bounced: /^undeliverable:/i.test(e.subject || ''),
+        bounced: isBounceLike(e.subject, e.body),
+        automated: isOooLike(e.subject, e.body),
       }))
       .sort((a, b) => new Date(b.timestamp || b.sentAt || 0) - new Date(a.timestamp || a.sentAt || 0))
       .slice(0, 5)
@@ -317,13 +337,31 @@ export default function RightNowView({ getToken }) {
   // moving, so defaulting to the marketing field alone was misleading.
   const mostRecentEmail = useMemo(() => {
     const marketing = selectedItem?.contact?.lastSendDate
-      ? { name: selectedItem.contact.lastEmailName, at: selectedItem.contact.lastSendDate, system: 'Marketing' }
+      ? {
+          name: selectedItem.contact.lastEmailName,
+          at: selectedItem.contact.lastSendDate,
+          system: 'Marketing',
+          // Marketing's own opened/clicked properties genuinely correspond
+          // to this same marketing-send record, so they're safe to use here.
+          openedAt: selectedItem.contact.lastOpenDate || null,
+          numOpens: selectedItem.contact.lastOpenDate ? 1 : 0, // marketing props don't expose a count, only last-opened
+        }
       : null
     const latestEngagement = emailEngagements
       .filter(e => !e.bounced)
       .sort((a, b) => new Date(b.sentAt || b.timestamp || 0) - new Date(a.sentAt || a.timestamp || 0))[0]
     const oneToOne = latestEngagement
-      ? { name: latestEngagement.subject, at: latestEngagement.sentAt || latestEngagement.timestamp, system: '1:1 / logged' }
+      ? {
+          name: latestEngagement.subject,
+          at: latestEngagement.sentAt || latestEngagement.timestamp,
+          system: '1:1 / logged',
+          // Tied to THIS specific engagement's own open data, not a
+          // disconnected global "have they ever opened anything" property —
+          // that mismatch is exactly what produced the confusing "sent 2d
+          // ago / opened 162d ago" display.
+          openedAt: latestEngagement.openedAt || null,
+          numOpens: latestEngagement.numOpens || 0,
+        }
       : null
     if (!marketing && !oneToOne) return null
     if (!marketing) return oneToOne
@@ -582,8 +620,8 @@ export default function RightNowView({ getToken }) {
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.9, marginBottom: 14 }}>
                 <div><strong style={{ color: 'var(--text)' }}>Last email:</strong> {mostRecentEmail.name || '(no subject)'}</div>
                 <div><strong style={{ color: 'var(--text)' }}>Sent:</strong> {timeAgo(mostRecentEmail.at)} <span style={{ color: 'var(--text-tertiary)' }}>({mostRecentEmail.system})</span></div>
-                {(selectedItem.contact?.lastOpenDate || selectedItem.contact?.salesLastOpened) ? (
-                  <div><strong style={{ color: 'var(--text)' }}>Opened:</strong> yes, {timeAgo(selectedItem.contact.lastOpenDate || selectedItem.contact.salesLastOpened)}</div>
+                {mostRecentEmail.openedAt ? (
+                  <div><strong style={{ color: 'var(--text)' }}>Opened:</strong> yes, {timeAgo(mostRecentEmail.openedAt)}{mostRecentEmail.numOpens > 1 ? ` (${mostRecentEmail.numOpens}x)` : ''}</div>
                 ) : (
                   <div><strong style={{ color: 'var(--text)' }}>Opened:</strong> not yet</div>
                 )}
@@ -614,7 +652,8 @@ export default function RightNowView({ getToken }) {
                             Sent {timeAgo(e.sentAt || e.timestamp)}
                             {e.numOpens > 0 && ` · opened ${e.numOpens}x`}
                             {e.numClicks > 0 && ` · clicked ${e.numClicks}x`}
-                            {e.replied && ' · replied'}
+                            {e.replied && e.automated && ' · auto-reply (OOO, not a real response)'}
+                            {e.replied && !e.automated && ' · replied'}
                           </>
                         )}
                       </div>
