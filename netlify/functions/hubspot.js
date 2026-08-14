@@ -11,6 +11,33 @@ function botLogBlobUrl() {
   const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
   return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/bot-log.json${sas}`;
 }
+function meetingConfirmationsBlobUrl(userId) {
+  const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/meeting-confirmations-${userId}.json${sas}`;
+}
+// Tracks which meeting IDs already got an auto-generated confirmation to-do.
+// Lives in Cipher's own storage since we never write this flag back to HubSpot.
+async function getConfirmedMeetingIds(userId) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return new Set();
+  try {
+    const res = await fetch(meetingConfirmationsBlobUrl(userId));
+    if (!res.ok) return new Set();
+    const data = await res.json();
+    return new Set(data.confirmedIds || []);
+  } catch { return new Set(); }
+}
+async function addConfirmedMeetingId(userId, meetingId, existingSet) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return;
+  const updated = new Set(existingSet);
+  updated.add(meetingId);
+  try {
+    await fetch(meetingConfirmationsBlobUrl(userId), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+      body: JSON.stringify({ confirmedIds: [...updated] }),
+    });
+  } catch (e) { console.error("[meeting-confirmations] write failed:", e.message); }
+}
 async function appendBotEntries(newBots) {
   if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN || !newBots.length) return;
   try {
@@ -75,6 +102,8 @@ import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
 import { getTabsForUser, getAllTabsForUser, getRegistry, saveRegistry, getPersonalTabs, savePersonalTabs, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
 import { getTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
+import { buildRightNowQueue, needsConfirmationTask, buildConfirmationTodo } from "./utils/rightNowQueue.js";
+import { mergeMeetings } from "./utils/meetingMerge.js";
 import { getActivityLog, addActivityEntry, deleteActivityEntry } from "./utils/activityLog.js";
 
 // Admin users -- comma-separated emails in ADMIN_EMAILS env var (preferred)
@@ -229,7 +258,7 @@ async function getOutlookCalendarEvents(userId, windowStart, windowEnd) {
     `https://graph.microsoft.com/v1.0/me/calendarView` +
     `?startDateTime=${windowStart.toISOString()}` +
     `&endDateTime=${windowEnd.toISOString()}` +
-    `&$select=id,subject,start,end,location,organizer,isCancelled,isOrganizer,responseStatus` +
+    `&$select=id,subject,start,end,location,organizer,isCancelled,isOrganizer,responseStatus,attendees` +
     `&$orderby=start/dateTime` +
     `&$top=50`;
 
@@ -6024,6 +6053,153 @@ export const handler = async (event, context) => {
         }
       } catch (err) {
         return ok({ entries: [], error: err.message });
+      }
+    }
+
+    // GET /right-now — the Right Now Queue: merges live signals, upcoming
+    // meetings (HubSpot + Outlook, deduped), and to-dos into one ranked list.
+    // Auto-generates a "confirm this meeting" to-do exactly once per meeting,
+    // 3 days out, tracked in our own blob since we never write that flag
+    // back to HubSpot.
+    //
+    // NOTE: HubSpot Task objects (due-today/overdue, the thing /tasks already
+    // computes with full owner-aware reply detection) are NOT folded in here
+    // yet — that logic is substantial enough to deserve its own pass rather
+    // than being duplicated inline. Signals, meetings, and to-dos are wired
+    // in now; tasks are the next piece.
+    if (method === "GET" && path === "/right-now") {
+      try {
+        // ── Signals: same 15-minute realtime window as /signals/recent ──────
+        const sinceMs = Date.now() - 15 * 60 * 1000;
+        const eventsData = await hsGet(user.userId, "/email/public/v1/events", {
+          startTimestamp: sinceMs,
+          limit: 100,
+        }).catch(() => ({ events: [] }));
+
+        const rawEvents = (eventsData.events || [])
+          .filter(ev => ["OPEN", "CLICK", "REPLY"].includes(ev.type));
+
+        const eventContactIds = [...new Set(
+          rawEvents.map(ev => ev.contactId ? String(ev.contactId) : null).filter(Boolean)
+        )];
+
+        // ── Meetings: HubSpot (last 3 days through next 14) ──────────────────
+        const meetingWindowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+        const meetingWindowEnd   = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+
+        const meetData = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+          filterGroups: [{
+            filters: [
+              { propertyName: "hs_meeting_start_time", operator: "GTE", value: meetingWindowStart.toISOString() },
+              { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
+            ],
+          }],
+          properties: ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time"],
+          associations: ["contacts"],
+          limit: 100,
+        }).catch(() => ({ results: [] }));
+
+        const hsMeetingsRaw = meetData.results || [];
+        const meetingContactIds = [...new Set(
+          hsMeetingsRaw
+            .map(m => m.associations?.contacts?.results?.[0]?.id)
+            .filter(Boolean)
+        )];
+
+        // ── Batch-fetch all contacts we need in one call (signals + meetings) ─
+        const allContactIds = [...new Set([...eventContactIds, ...meetingContactIds])];
+        const contactMap = {};
+        const contactsByEmail = {};
+        if (allContactIds.length > 0) {
+          try {
+            const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+              properties: BASE_CONTACT_PROPS,
+              inputs: allContactIds.map(id => ({ id })),
+            });
+            (batch.results || []).forEach(c => {
+              const info = normalizeContact(c);
+              contactMap[c.id] = info;
+              if (info.email) contactsByEmail[info.email.toLowerCase()] = info;
+            });
+          } catch { /* enrichment best-effort, same as /signals/recent */ }
+        }
+
+        // ── Build signals in the exact shape rightNowQueue.js expects ────────
+        const signals = rawEvents
+          .map(ev => {
+            const contactId = ev.contactId ? String(ev.contactId) : null;
+            const contact = contactId ? (contactMap[contactId] || null) : null;
+            const eventType = ev.type;
+            let score = 0, label = "";
+            if (eventType === "REPLY") {
+              if (isOooReply(ev.subject || null, null)) return null; // handled via OOO to-do flow, not here
+              score = 100; label = "Replied";
+            } else if (eventType === "CLICK") { score = 70; label = "Clicked link"; }
+            else if (eventType === "OPEN")   { score = 40; label = "Opened"; }
+
+            const botCheck = detectBot({
+              filteredEvent: false, sentAt: null,
+              openedAt: eventType === "OPEN" ? ev.created : null,
+              numOpens: eventType === "OPEN" ? 1 : 0,
+              numClicks: eventType === "CLICK" ? 1 : 0,
+              replied: eventType === "REPLY",
+            });
+            if (botCheck.isBot && eventType === "OPEN") return null;
+
+            return {
+              id: `rt-${ev.id || ev.created}`,
+              type: eventType,
+              timestamp: ev.created || null,
+              score, label, contactId, contact,
+            };
+          })
+          .filter(Boolean);
+
+        // ── Attach contactId to each HubSpot meeting from its association ────
+        const hsMeetings = hsMeetingsRaw.map(m => ({
+          ...m,
+          contactId: m.associations?.contacts?.results?.[0]?.id || null,
+        }));
+
+        // ── Outlook meetings, same window ────────────────────────────────────
+        const outlookEvents = await getOutlookCalendarEvents(user.userId, meetingWindowStart, meetingWindowEnd);
+
+        // ── Merge, dedup, score ───────────────────────────────────────────────
+        const mergedMeetings = mergeMeetings(hsMeetings, outlookEvents, contactMap, contactsByEmail);
+
+        // ── Confirmation to-do: fire once per meeting, 3 days out ────────────
+        const confirmedIds = await getConfirmedMeetingIds(user.userId);
+        for (const meeting of mergedMeetings) {
+          meeting.confirmationTaskCreated = confirmedIds.has(meeting.id);
+          if (needsConfirmationTask(meeting)) {
+            const todo = buildConfirmationTodo(meeting);
+            await addTodo(user.userId, todo);
+            await addConfirmedMeetingId(user.userId, meeting.id, confirmedIds);
+            confirmedIds.add(meeting.id);
+            meeting.confirmationTaskCreated = true;
+          }
+        }
+
+        // ── To-dos ────────────────────────────────────────────────────────────
+        const todos = await getTodos(user.userId);
+
+        const queue = buildRightNowQueue({
+          signals,
+          tasks: [], // full HubSpot task/reply-detection parity is the next piece, not in this cut
+          todos,
+          meetings: mergedMeetings.map(m => ({
+            id: m.id,
+            startTime: m.startTime,
+            contactId: m.contactId,
+            contact: m.contact,
+            subject: m.subject,
+          })),
+        });
+
+        return ok({ queue });
+      } catch (err) {
+        console.error("[right-now] Error:", err.message);
+        return error(500, `Right now error: ${err.message}`);
       }
     }
 
