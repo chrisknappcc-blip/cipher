@@ -51,6 +51,24 @@ function sourceLabel(source) {
   return 'Item'
 }
 
+function timeAgo(iso) {
+  if (!iso) return null
+  const ms = Date.now() - new Date(iso).getTime()
+  const hours = ms / 3600000
+  if (hours < 1) return 'under an hour ago'
+  if (hours < 24) return `${Math.round(hours)}h ago`
+  return `${Math.round(hours / 24)}d ago`
+}
+
+// Cheap keyword heuristic, NOT AI content understanding — flags that a reply
+// might be waiting on an answer because it contains a question mark. Real
+// detection would need an actual model call reading the email body, which is
+// the same cost tradeoff as the gap-search AI feature this version is
+// deliberately not running. This is the free, honest middle ground.
+function looksLikeItNeedsAReply(body) {
+  return !!body && body.includes('?')
+}
+
 export default function RightNowView({ getToken }) {
   const [queue, setQueue] = useState([])
   const [top5Picks, setTop5Picks] = useState([]) // raw {id, rank, rationale} from the scheduled job
@@ -66,6 +84,8 @@ export default function RightNowView({ getToken }) {
   const [adding, setAdding] = useState(false)
   const [selectedId, setSelectedId] = useState(null)
   const [visibleCount, setVisibleCount] = useState(10)
+  const [contactDetail, setContactDetail] = useState(null) // { contact, engagements } from GET /contacts/:id, fetched on select
+  const [contactDetailLoading, setContactDetailLoading] = useState(false)
 
   const showToast = useCallback((msg) => {
     setToast(msg)
@@ -241,6 +261,33 @@ export default function RightNowView({ getToken }) {
   }
 
   const selectedItem = queue.find(i => i.id === selectedId) || null
+
+  useEffect(() => {
+    if (!selectedItem?.contactId) {
+      setContactDetail(null)
+      return
+    }
+    let cancelled = false
+    setContactDetailLoading(true)
+    apiFetch(`/api/hubspot/contacts/${selectedItem.contactId}`, getToken)
+      .then(data => { if (!cancelled) setContactDetail(data) })
+      .catch(() => { if (!cancelled) setContactDetail(null) })
+      .finally(() => { if (!cancelled) setContactDetailLoading(false) })
+    return () => { cancelled = true }
+  }, [selectedItem?.contactId, getToken])
+
+  const emailEngagements = useMemo(() => {
+    if (!contactDetail?.engagements) return []
+    return contactDetail.engagements
+      .filter(e => e.type === 'EMAIL' || e.subject)
+      .sort((a, b) => new Date(b.timestamp || b.sentAt || 0) - new Date(a.timestamp || a.sentAt || 0))
+      .slice(0, 5)
+  }, [contactDetail])
+
+  const lastIncomingBody = useMemo(() => {
+    const reply = contactDetail?.engagements?.find(e => e.replied || e.type === 'INCOMING_EMAIL')
+    return reply?.body || null
+  }, [contactDetail])
 
   if (loading) {
     return (
@@ -441,12 +488,69 @@ export default function RightNowView({ getToken }) {
             {displayCompany(selectedItem) && (
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 14 }}>{displayCompany(selectedItem)}</div>
             )}
+
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
               Why it's in the queue
             </div>
-            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 14 }}>
               {selectedItem.whyTag || 'No reason recorded'}
             </div>
+
+            {looksLikeItNeedsAReply(lastIncomingBody) && (
+              <div style={{ fontSize: 11.5, background: 'var(--amber-light)', color: 'var(--amber)', padding: '7px 10px', borderRadius: 8, marginBottom: 14 }}>
+                Their last reply contains a question — might be waiting on you. (Keyword check, not a real read of the email.)
+              </div>
+            )}
+
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 8, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+              Email activity
+            </div>
+
+            {selectedItem.contact ? (
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.9, marginBottom: 14 }}>
+                {selectedItem.contact.lastEmailName && (
+                  <div><strong style={{ color: 'var(--text)' }}>Last email:</strong> {selectedItem.contact.lastEmailName}</div>
+                )}
+                {selectedItem.contact.lastSendDate && (
+                  <div><strong style={{ color: 'var(--text)' }}>Sent:</strong> {timeAgo(selectedItem.contact.lastSendDate)}</div>
+                )}
+                {(selectedItem.contact.lastOpenDate || selectedItem.contact.salesLastOpened) ? (
+                  <div><strong style={{ color: 'var(--text)' }}>Opened:</strong> yes, {timeAgo(selectedItem.contact.lastOpenDate || selectedItem.contact.salesLastOpened)}</div>
+                ) : (
+                  <div><strong style={{ color: 'var(--text)' }}>Opened:</strong> not yet</div>
+                )}
+                {selectedItem.contact.lastReplyDate && (
+                  <div><strong style={{ color: 'var(--text)' }}>Replied:</strong> {timeAgo(selectedItem.contact.lastReplyDate)}</div>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 14 }}>No contact record linked to this item.</div>
+            )}
+
+            {contactDetailLoading && (
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Loading recent emails…</div>
+            )}
+
+            {!contactDetailLoading && emailEngagements.length > 0 && (
+              <>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 8 }}>
+                  Recent emails
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {emailEngagements.map((e, i) => (
+                    <div key={i} style={{ fontSize: 11.5, padding: '9px 10px', borderRadius: 8, border: '1px solid var(--border)' }}>
+                      <div style={{ fontWeight: 500, color: 'var(--text)', marginBottom: 2 }}>{e.subject || '(no subject)'}</div>
+                      <div style={{ color: 'var(--text-tertiary)' }}>
+                        Sent {timeAgo(e.sentAt || e.timestamp)}
+                        {e.numOpens > 0 && ` · opened ${e.numOpens}x`}
+                        {e.numClicks > 0 && ` · clicked ${e.numClicks}x`}
+                        {e.replied && ' · replied'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </>
         ) : (
           <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>Select an item to see details.</div>
