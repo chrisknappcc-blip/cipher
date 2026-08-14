@@ -128,8 +128,21 @@ export default function RightNowView({ getToken }) {
     [queue, dismissedIds]
   )
 
+  // Meetings happening today get their own always-visible slot — they don't
+  // compete for one of the 5 Top 5 spots, and they're never hidden by the
+  // score threshold below, since "you have a meeting today" is important
+  // regardless of how the formula would otherwise score it.
+  const todaysMeetings = useMemo(() => {
+    const todayStr = new Date().toDateString()
+    return visibleQueue.filter(item =>
+      item.source === 'meeting' && item.raw?.startTime && new Date(item.raw.startTime).toDateString() === todayStr
+    )
+  }, [visibleQueue])
+  const todaysMeetingIds = useMemo(() => new Set(todaysMeetings.map(i => i.id)), [todaysMeetings])
+
   const top5Combined = useMemo(() => {
-    const pinnedItems = visibleQueue
+    const eligible = visibleQueue.filter(item => !todaysMeetingIds.has(item.id))
+    const pinnedItems = eligible
       .filter(item => pinnedIds.has(item.id))
       .map(item => ({ ...item, isPinned: true }))
 
@@ -138,18 +151,28 @@ export default function RightNowView({ getToken }) {
       .filter(p => !pinnedIds.has(p.id))
       .slice(0, slotsLeft)
       .map(p => {
-        const match = visibleQueue.find(item => item.id === p.id)
+        const match = eligible.find(item => item.id === p.id)
         return match ? { ...match, rationale: p.rationale, isPinned: false } : null
       })
       .filter(Boolean)
 
     return [...pinnedItems, ...aiItems]
-  }, [visibleQueue, pinnedIds, top5Picks])
+  }, [visibleQueue, todaysMeetingIds, pinnedIds, top5Picks])
 
   const top5Ids = useMemo(() => new Set(top5Combined.map(i => i.id)), [top5Combined])
+
+  // Free, zero-cost filter: below this score, a signal has cooled off enough
+  // that it's not really "act on this now" material — but manual to-dos and
+  // meetings always show regardless, since those are explicit asks, not
+  // formula-derived urgency.
+  const MIN_SCORE_TO_SHOW = 45
   const restOfQueue = useMemo(
-    () => visibleQueue.filter(item => !top5Ids.has(item.id)),
-    [visibleQueue, top5Ids]
+    () => visibleQueue.filter(item =>
+      !top5Ids.has(item.id) &&
+      !todaysMeetingIds.has(item.id) &&
+      (item.queueScore >= MIN_SCORE_TO_SHOW || item.source === 'todo')
+    ),
+    [visibleQueue, top5Ids, todaysMeetingIds]
   )
   const pagedQueue = restOfQueue.slice(0, visibleCount)
 
@@ -280,9 +303,33 @@ export default function RightNowView({ getToken }) {
     if (!contactDetail?.engagements) return []
     return contactDetail.engagements
       .filter(e => e.type === 'EMAIL' || e.subject)
+      .map(e => ({
+        ...e,
+        bounced: /^undeliverable:/i.test(e.subject || ''),
+      }))
       .sort((a, b) => new Date(b.timestamp || b.sentAt || 0) - new Date(a.timestamp || a.sentAt || 0))
       .slice(0, 5)
   }, [contactDetail])
+
+  // Compares marketing-system "last send" against the most recent actual
+  // engagement send, and shows whichever genuinely happened more recently —
+  // marketing campaigns can go stale for months while 1:1 outreach keeps
+  // moving, so defaulting to the marketing field alone was misleading.
+  const mostRecentEmail = useMemo(() => {
+    const marketing = selectedItem?.contact?.lastSendDate
+      ? { name: selectedItem.contact.lastEmailName, at: selectedItem.contact.lastSendDate, system: 'Marketing' }
+      : null
+    const latestEngagement = emailEngagements
+      .filter(e => !e.bounced)
+      .sort((a, b) => new Date(b.sentAt || b.timestamp || 0) - new Date(a.sentAt || a.timestamp || 0))[0]
+    const oneToOne = latestEngagement
+      ? { name: latestEngagement.subject, at: latestEngagement.sentAt || latestEngagement.timestamp, system: '1:1 / logged' }
+      : null
+    if (!marketing && !oneToOne) return null
+    if (!marketing) return oneToOne
+    if (!oneToOne) return marketing
+    return new Date(oneToOne.at) > new Date(marketing.at) ? oneToOne : marketing
+  }, [selectedItem, emailEngagements])
 
   const lastIncomingBody = useMemo(() => {
     const reply = contactDetail?.engagements?.find(e => e.replied || e.type === 'INCOMING_EMAIL')
@@ -358,6 +405,31 @@ export default function RightNowView({ getToken }) {
           </>
         ) : (
           <>
+            {todaysMeetings.length > 0 && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px', color: 'var(--urgency-warm)' }}>TODAY'S MEETINGS</span>
+                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>· always shown, doesn't count against Top 5</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 22 }}>
+                  {todaysMeetings.map(item => (
+                    <div key={item.id} onClick={() => setSelectedId(item.id)} style={{
+                      borderRadius: 14, padding: '13px 16px', display: 'flex', gap: 11, alignItems: 'center', cursor: 'pointer',
+                      background: 'color-mix(in srgb, var(--urgency-warm) 10%, var(--bg-panel))',
+                      border: '1px solid color-mix(in srgb, var(--urgency-warm) 40%, var(--border))',
+                      boxShadow: 'var(--shadow-soft)',
+                    }}>
+                      <span style={{ fontSize: 15 }}>📅</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>{displayName(item)}{displayCompany(item) ? ` · ${displayCompany(item)}` : ''}</div>
+                        <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>{item.whyTag}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
             {top5Combined.length > 0 && (
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
@@ -506,25 +578,21 @@ export default function RightNowView({ getToken }) {
               Email activity
             </div>
 
-            {selectedItem.contact ? (
+            {mostRecentEmail ? (
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.9, marginBottom: 14 }}>
-                {selectedItem.contact.lastEmailName && (
-                  <div><strong style={{ color: 'var(--text)' }}>Last email:</strong> {selectedItem.contact.lastEmailName}</div>
-                )}
-                {selectedItem.contact.lastSendDate && (
-                  <div><strong style={{ color: 'var(--text)' }}>Sent:</strong> {timeAgo(selectedItem.contact.lastSendDate)}</div>
-                )}
-                {(selectedItem.contact.lastOpenDate || selectedItem.contact.salesLastOpened) ? (
+                <div><strong style={{ color: 'var(--text)' }}>Last email:</strong> {mostRecentEmail.name || '(no subject)'}</div>
+                <div><strong style={{ color: 'var(--text)' }}>Sent:</strong> {timeAgo(mostRecentEmail.at)} <span style={{ color: 'var(--text-tertiary)' }}>({mostRecentEmail.system})</span></div>
+                {(selectedItem.contact?.lastOpenDate || selectedItem.contact?.salesLastOpened) ? (
                   <div><strong style={{ color: 'var(--text)' }}>Opened:</strong> yes, {timeAgo(selectedItem.contact.lastOpenDate || selectedItem.contact.salesLastOpened)}</div>
                 ) : (
                   <div><strong style={{ color: 'var(--text)' }}>Opened:</strong> not yet</div>
                 )}
-                {selectedItem.contact.lastReplyDate && (
+                {selectedItem.contact?.lastReplyDate && (
                   <div><strong style={{ color: 'var(--text)' }}>Replied:</strong> {timeAgo(selectedItem.contact.lastReplyDate)}</div>
                 )}
               </div>
             ) : (
-              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 14 }}>No contact record linked to this item.</div>
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 14 }}>No email activity found for this contact.</div>
             )}
 
             {contactDetailLoading && (
@@ -534,17 +602,21 @@ export default function RightNowView({ getToken }) {
             {!contactDetailLoading && emailEngagements.length > 0 && (
               <>
                 <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 8 }}>
-                  Recent emails
+                  Recent emails <span style={{ textTransform: 'none', letterSpacing: 0 }}>(1:1 / logged activity — separate from the marketing send above)</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {emailEngagements.map((e, i) => (
-                    <div key={i} style={{ fontSize: 11.5, padding: '9px 10px', borderRadius: 8, border: '1px solid var(--border)' }}>
+                    <div key={i} style={{ fontSize: 11.5, padding: '9px 10px', borderRadius: 8, border: e.bounced ? '1px solid var(--red)' : '1px solid var(--border)' }}>
                       <div style={{ fontWeight: 500, color: 'var(--text)', marginBottom: 2 }}>{e.subject || '(no subject)'}</div>
-                      <div style={{ color: 'var(--text-tertiary)' }}>
-                        Sent {timeAgo(e.sentAt || e.timestamp)}
-                        {e.numOpens > 0 && ` · opened ${e.numOpens}x`}
-                        {e.numClicks > 0 && ` · clicked ${e.numClicks}x`}
-                        {e.replied && ' · replied'}
+                      <div style={{ color: e.bounced ? 'var(--red)' : 'var(--text-tertiary)' }}>
+                        {e.bounced ? 'Bounced, undelivered' : (
+                          <>
+                            Sent {timeAgo(e.sentAt || e.timestamp)}
+                            {e.numOpens > 0 && ` · opened ${e.numOpens}x`}
+                            {e.numClicks > 0 && ` · clicked ${e.numClicks}x`}
+                            {e.replied && ' · replied'}
+                          </>
+                        )}
                       </div>
                     </div>
                   ))}

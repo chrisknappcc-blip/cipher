@@ -1268,7 +1268,7 @@ function BotLogPanel({ entries = [], onClear }) {
   )
 }
 
-export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeError, signOut }) {
+export default function Dashboard({ user, theme, toggleTheme, colorTheme, updateColorTheme, fontSize, updateFontSize, getToken, onScopeError, signOut }) {
 
   // ── User identity helpers (Netlify Identity + Clerk compatible) ──────────
   // Netlify Identity: user.email, user.user_metadata?.full_name
@@ -2304,6 +2304,15 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
     { key:'reports',       label:'Reports', icon:'chart' },
   ]
 
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const COLOR_THEMES = [
+    { key: 'navy',   label: 'Navy',   swatch: '#1C6FBE' },
+    { key: 'forest', label: 'Forest', swatch: '#2FA86B' },
+    { key: 'plum',   label: 'Plum',   swatch: '#9A5FD1' },
+    { key: 'slate',  label: 'Slate',  swatch: '#4C8FB0' },
+    { key: 'sunset', label: 'Sunset', swatch: '#E0793C' },
+  ]
+
   const NavIcon = ({ name, active }) => {
     const color = active ? 'var(--urgency-hot)' : 'var(--text-secondary)'
     const common = { width:20, height:20, viewBox:'0 0 24 24', fill:'none', stroke:color, strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round' }
@@ -2329,6 +2338,44 @@ export default function Dashboard({ user, theme, toggleTheme, getToken, onScopeE
             <span style={{ fontSize:11, color:'var(--text-tertiary)' }}>
               {loadingMore ? 'Loading more...' : 'Live'}
             </span>
+          </div>
+          <div style={{ position:'relative' }}>
+            <button onClick={() => setSettingsOpen(o => !o)}
+              style={{ width:32, height:32, borderRadius:'var(--radius)', background:'var(--bg-secondary)', display:'flex', alignItems:'center', justifyContent:'center', border:'1px solid var(--border)', cursor:'pointer' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            </button>
+
+            {settingsOpen && (
+              <div style={{ position:'absolute', top:40, right:0, width:220, background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', boxShadow:'var(--shadow-soft)', padding:16, zIndex:200 }}>
+                <div style={{ fontSize:11, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.4px', marginBottom:10 }}>Color theme</div>
+                <div style={{ display:'flex', gap:8, marginBottom:18 }}>
+                  {COLOR_THEMES.map(ct => (
+                    <button key={ct.key} onClick={() => updateColorTheme(ct.key)} title={ct.label}
+                      style={{
+                        width:28, height:28, borderRadius:'50%', background:ct.swatch, cursor:'pointer',
+                        border: colorTheme === ct.key ? '2px solid var(--text)' : '2px solid transparent',
+                        outline: colorTheme === ct.key ? '2px solid ' + ct.swatch : 'none',
+                        outlineOffset:2,
+                      }} />
+                  ))}
+                </div>
+
+                <div style={{ fontSize:11, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.4px', marginBottom:10 }}>Font size</div>
+                <div style={{ display:'flex', gap:6 }}>
+                  {[{key:'small',size:11},{key:'medium',size:14},{key:'large',size:17}].map(sz => (
+                    <button key={sz.key} onClick={() => updateFontSize(sz.key)}
+                      style={{
+                        flex:1, padding:'6px 0', fontSize:sz.size, fontWeight:500, borderRadius:'var(--radius)', cursor:'pointer',
+                        background: fontSize === sz.key ? 'var(--accent)' : 'var(--bg-secondary)',
+                        color: fontSize === sz.key ? '#fff' : 'var(--text-secondary)',
+                        border:'1px solid ' + (fontSize === sz.key ? 'var(--accent)' : 'var(--border)'),
+                      }}>
+                      A
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <button onClick={toggleTheme}
             style={{ width:32, height:32, borderRadius:'var(--radius)', background:'var(--bg-secondary)', display:'flex', alignItems:'center', justifyContent:'center', border:'1px solid var(--border)', cursor:'pointer' }}>

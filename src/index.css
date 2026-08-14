@@ -35,33 +35,14 @@
 }
 
 [data-theme="dark"] {
-  --bg: #0A2A4A;
-  --bg-panel: #0D3355;
-  --bg-secondary: #123153;
-  --bg-hover: #123B63;
-
-  --text: #EAF2FB;
-  --text-secondary: #8FB8DE;
-  --text-tertiary: #6F98BE;
-
-  --border: #14406E;
-  --border-strong: #1E5588;
-
-  --accent: #1C6FBE;
-  --accent-light: #123153;
-  --accent-text: #63C7F2;
-
+  /* Functional colors — constant across every color theme below, since
+     these carry real meaning (urgency, pins, manager pushes) rather than
+     being purely aesthetic. Swapping the color theme shouldn't change what
+     "hot" or "pinned" looks like. */
   --red: #D9534F;
   --red-light: #2D1414;
   --amber: #E8A33D;
   --amber-light: #2D1F08;
-  --blue: #63C7F2;
-  --blue-light: #123153;
-
-  /* Right Now Queue urgency scale — reserved for signal/task/meeting urgency
-     coloring specifically, not general UI chrome. Lime = hot, cyan = warm,
-     gray-blue = cooling, red = stale. Keep this vocabulary limited to the
-     queue views so it stays meaningful instead of decorative. */
   --urgency-hot: #CFE94A;
   --urgency-warm: #63C7F2;
   --urgency-cooling: #7C93A8;
@@ -71,7 +52,118 @@
   --shadow-soft: 0 4px 20px rgba(0,0,0,0.25), 0 1px 3px rgba(0,0,0,0.2);
 }
 
+/* ── Color themes — 5 selectable chrome palettes for dark mode ──────────────
+   Default (no data-color-theme set, or "navy") is the original brand look.
+   Light mode keeps one neutral background but still swaps --accent per
+   theme, so the picker means something in both modes without needing five
+   fully separate light palettes. */
+
+[data-theme="dark"]:not([data-color-theme]),
+[data-theme="dark"][data-color-theme="navy"] {
+  --bg: #0A2A4A;
+  --bg-panel: #0D3355;
+  --bg-secondary: #123153;
+  --bg-hover: #123B63;
+  --text: #EAF2FB;
+  --text-secondary: #8FB8DE;
+  --text-tertiary: #6F98BE;
+  --border: #14406E;
+  --border-strong: #1E5588;
+  --accent: #1C6FBE;
+  --accent-light: #123153;
+  --accent-text: #63C7F2;
+  --blue: #63C7F2;
+  --blue-light: #123153;
+}
+
+[data-theme="dark"][data-color-theme="forest"] {
+  --bg: #0E2A20;
+  --bg-panel: #133A2B;
+  --bg-secondary: #17402F;
+  --bg-hover: #1C4A37;
+  --text: #E9F5EC;
+  --text-secondary: #9FC7AD;
+  --text-tertiary: #6F9C80;
+  --border: #1E4A36;
+  --border-strong: #2A5C43;
+  --accent: #2FA86B;
+  --accent-light: #17402F;
+  --accent-text: #6BD79A;
+  --blue: #6BD79A;
+  --blue-light: #17402F;
+}
+
+[data-theme="dark"][data-color-theme="plum"] {
+  --bg: #241730;
+  --bg-panel: #2F1E3F;
+  --bg-secondary: #35234A;
+  --bg-hover: #3D2955;
+  --text: #F3EAFA;
+  --text-secondary: #C3A9D9;
+  --text-tertiary: #8E6FA8;
+  --border: #3D2955;
+  --border-strong: #4E3568;
+  --accent: #9A5FD1;
+  --accent-light: #35234A;
+  --accent-text: #C99FEE;
+  --blue: #C99FEE;
+  --blue-light: #35234A;
+}
+
+[data-theme="dark"][data-color-theme="slate"] {
+  --bg: #1B2129;
+  --bg-panel: #232A34;
+  --bg-secondary: #29313C;
+  --bg-hover: #313A46;
+  --text: #E7ECF2;
+  --text-secondary: #9AAAB9;
+  --text-tertiary: #6B7C8C;
+  --border: #2E3844;
+  --border-strong: #3C4856;
+  --accent: #4C8FB0;
+  --accent-light: #29313C;
+  --accent-text: #7EC3DE;
+  --blue: #7EC3DE;
+  --blue-light: #29313C;
+}
+
+[data-theme="dark"][data-color-theme="sunset"] {
+  --bg: #2A1D14;
+  --bg-panel: #38271A;
+  --bg-secondary: #3F2C1E;
+  --bg-hover: #493322;
+  --text: #FAF0E4;
+  --text-secondary: #D9B396;
+  --text-tertiary: #A67F62;
+  --border: #4A3423;
+  --border-strong: #5C4230;
+  --accent: #E0793C;
+  --accent-light: #3F2C1E;
+  --accent-text: #F0A468;
+  --blue: #F0A468;
+  --blue-light: #3F2C1E;
+}
+
+/* Light mode accent swap per theme — background stays the one neutral
+   cream palette, only the accent color changes so the picker still does
+   something meaningful without needing five full light palettes. */
+[data-theme="light"][data-color-theme="forest"] { --accent: #1D7A4F; --accent-text: #0D5534; }
+[data-theme="light"][data-color-theme="plum"]   { --accent: #7A3FA8; --accent-text: #5A2680; }
+[data-theme="light"][data-color-theme="slate"]   { --accent: #3D6E8C; --accent-text: #244B5F; }
+[data-theme="light"][data-color-theme="sunset"]  { --accent: #C4602A; --accent-text: #8F4318; }
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Font size setting, applied via zoom rather than body font-size.
+   Reason: almost every font size in this app is a hardcoded pixel value in
+   inline React styles (fontSize: 13, etc.), not something that inherits from
+   body's font-size — so changing body font-size alone would do almost
+   nothing visible. zoom scales the actual rendered page, which is what
+   makes this setting work in practice given how the components are styled.
+   Supported in all current evergreen browsers (Chrome, Edge, Safari 17+,
+   Firefox 126+); a very old browser would just ignore it harmlessly. */
+html[data-font-size="small"] { zoom: 0.9; }
+html[data-font-size="large"] { zoom: 1.15; }
 
 body {
   font-family: var(--font);

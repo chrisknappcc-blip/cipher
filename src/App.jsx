@@ -234,11 +234,19 @@ export default function App() {
   const [checkingConnection, setCheckingConnection] = useState(true)
   const [tokenDone,  setTokenDone]  = useState(false)
   const [theme, setTheme] = useState(() => localStorage.getItem('cipher-theme') || 'dark')
+  const [colorTheme, setColorTheme] = useState(() => localStorage.getItem('cipher-color-theme') || 'navy')
+  const [fontSize, setFontSize] = useState(() => localStorage.getItem('cipher-font-size') || 'medium')
 
   // Apply theme to document root so CSS [data-theme="dark"] selector works
   useEffect(() => {
     document.documentElement.dataset.theme = theme
   }, [theme])
+  useEffect(() => {
+    document.documentElement.dataset.colorTheme = colorTheme
+  }, [colorTheme])
+  useEffect(() => {
+    document.documentElement.dataset.fontSize = fontSize
+  }, [fontSize])
 
   const toggleTheme = useCallback(() => {
     setTheme(t => {
@@ -246,6 +254,16 @@ export default function App() {
       localStorage.setItem('cipher-theme', next)
       return next
     })
+  }, [])
+
+  const updateColorTheme = useCallback((next) => {
+    setColorTheme(next)
+    localStorage.setItem('cipher-color-theme', next)
+  }, [])
+
+  const updateFontSize = useCallback((next) => {
+    setFontSize(next)
+    localStorage.setItem('cipher-font-size', next)
   }, [])
 
   const getToken = useCallback(async () => {
@@ -364,6 +382,10 @@ export default function App() {
     getToken={getToken}
     theme={theme}
     toggleTheme={toggleTheme}
+    colorTheme={colorTheme}
+    updateColorTheme={updateColorTheme}
+    fontSize={fontSize}
+    updateFontSize={updateFontSize}
     signOut={signOut}
     onScopeError={onScopeError}
   />
