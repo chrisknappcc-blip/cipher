@@ -38,6 +38,33 @@ async function addConfirmedMeetingId(userId, meetingId, existingSet) {
     });
   } catch (e) { console.error("[meeting-confirmations] write failed:", e.message); }
 }
+
+// Same pattern, for OOO follow-up to-dos — fires once per contact, not on every poll.
+function oooFollowupsBlobUrl(userId) {
+  const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/ooo-followups-${userId}.json${sas}`;
+}
+async function getConfirmedOooIds(userId) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return new Set();
+  try {
+    const res = await fetch(oooFollowupsBlobUrl(userId));
+    if (!res.ok) return new Set();
+    const data = await res.json();
+    return new Set(data.confirmedIds || []);
+  } catch { return new Set(); }
+}
+async function addConfirmedOooId(userId, contactId, existingSet) {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return;
+  const updated = new Set(existingSet);
+  updated.add(contactId);
+  try {
+    await fetch(oooFollowupsBlobUrl(userId), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+      body: JSON.stringify({ confirmedIds: [...updated] }),
+    });
+  } catch (e) { console.error("[ooo-followups] write failed:", e.message); }
+}
 async function appendBotEntries(newBots) {
   if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN || !newBots.length) return;
   try {
@@ -1195,8 +1222,7 @@ export const handler = async (event, context) => {
     // Query params:
     //   days=7|14|21|30     (default: 14) -- applies to all three sections
     //   assigned_bdr=name   (optional)    -- filters replies and sequences by rep
-    if (method === "GET" && path === "/tasks") {
-      try {
+    async function computeTaskQueue(user, qp) {
         const days    = Math.min(parseInt(qp.days || "14", 10), 30);
         const now     = Date.now();
         const sinceISO    = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
@@ -1563,7 +1589,7 @@ export const handler = async (event, context) => {
           ...(upcomingTasksData.results || []).map(t => normalizeTask(t, false)),
         ];
 
-        return ok({
+        return {
           repliesAwaitingResponse,
           oooReplies,
           upcomingSequences,
@@ -1581,8 +1607,13 @@ export const handler = async (event, context) => {
               territory:    qp.territory    || null,
             },
           },
-        });
+        };
+    }
 
+    if (method === "GET" && path === "/tasks") {
+      try {
+        const data = await computeTaskQueue(user, qp);
+        return ok(data);
       } catch (err) {
         console.error("[tasks] Error:", err.message);
         return error(500, `Tasks error: ${err.message}`);
@@ -6056,19 +6087,58 @@ export const handler = async (event, context) => {
       }
     }
 
-    // GET /right-now — the Right Now Queue: merges live signals, upcoming
+    // GET /right-now — the Right Now Queue: merges live signals, replies
+    // awaiting response, due/overdue tasks, OOO follow-ups, upcoming
     // meetings (HubSpot + Outlook, deduped), and to-dos into one ranked list.
-    // Auto-generates a "confirm this meeting" to-do exactly once per meeting,
-    // 3 days out, tracked in our own blob since we never write that flag
-    // back to HubSpot.
     //
-    // NOTE: HubSpot Task objects (due-today/overdue, the thing /tasks already
-    // computes with full owner-aware reply detection) are NOT folded in here
-    // yet — that logic is substantial enough to deserve its own pass rather
-    // than being duplicated inline. Signals, meetings, and to-dos are wired
-    // in now; tasks are the next piece.
+    // Reuses computeTaskQueue — the exact same logic /tasks already runs —
+    // so replies-awaiting-response and due tasks can't drift out of sync
+    // between the two views.
     if (method === "GET" && path === "/right-now") {
       try {
+        // ── Everything /tasks already knows how to compute ───────────────────
+        const taskData = await computeTaskQueue(user, qp);
+
+        // repliesAwaitingResponse already carries replyDate + contactId —
+        // reshape into the exact signal shape scoreSignalForQueue expects so
+        // it gets the same reply-aging treatment as a live signal would.
+        const replySignals = (taskData.repliesAwaitingResponse || []).map(r => ({
+          id: `reply-${r.contactId}`,
+          type: "REPLY",
+          timestamp: r.replyDate,
+          score: 100,
+          label: "Replied",
+          contactId: r.contactId,
+          contact: r.contact,
+        }));
+
+        // dueTasks map directly onto scoreTaskForQueue's expected shape.
+        const dueTasksForQueue = (taskData.dueTasks || []).map(t => ({
+          id: t.id,
+          dueDate: t.dueDate,
+          contactId: null, // HubSpot task objects here aren't associated back to a contactId yet
+          contact: null,
+          subject: t.subject,
+        }));
+
+        // ── OOO follow-ups: fire a one-time to-do per contact, same
+        // idempotency pattern as meeting confirmations, tracked in blob
+        // since we never write this back to HubSpot ──────────────────────────
+        const confirmedOooIds = await getConfirmedOooIds(user.userId);
+        for (const ooo of (taskData.oooReplies || [])) {
+          if (!confirmedOooIds.has(ooo.contactId)) {
+            await addTodo(user.userId, {
+              contactId: ooo.contactId,
+              text: `Follow up with ${ooo.contact?.name || "contact"} — back from OOO${ooo.oooReturnDate ? ` around ${ooo.oooReturnDate}` : ""}`,
+              autoDetected: true,
+              priority: "HIGH",
+              createdAt: new Date().toISOString(),
+            });
+            await addConfirmedOooId(user.userId, ooo.contactId, confirmedOooIds);
+            confirmedOooIds.add(ooo.contactId);
+          }
+        }
+
         // ── Signals: same 15-minute realtime window as /signals/recent ──────
         const sinceMs = Date.now() - 15 * 60 * 1000;
         const eventsData = await hsGet(user.userId, "/email/public/v1/events", {
@@ -6184,8 +6254,8 @@ export const handler = async (event, context) => {
         const todos = await getTodos(user.userId);
 
         const queue = buildRightNowQueue({
-          signals,
-          tasks: [], // full HubSpot task/reply-detection parity is the next piece, not in this cut
+          signals: [...signals, ...replySignals],
+          tasks: dueTasksForQueue,
           todos,
           meetings: mergedMeetings.map(m => ({
             id: m.id,
