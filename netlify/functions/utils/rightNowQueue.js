@@ -49,15 +49,17 @@ function agingMultiplier(kind, hoursWaiting) {
   return ramped;
 }
 
-// ── Signals (opens/clicks/replies from scoreAllSignals) ────────────────────
+// ── Signals (opens/clicks/replies, matching the real shape returned by
+// GET /signals/recent — { type: "OPEN"|"CLICK"|"REPLY", timestamp, score, label, contactId, contact }) ─
 function scoreSignalForQueue(signal) {
   const hoursAgo = hoursSince(signal.timestamp);
-  const eventType = signal.eventType || (signal.replied ? "REPLY" : signal.label?.startsWith("Opened") ? "OPEN" : "CLICK");
+  const eventType = signal.type; // "OPEN" | "CLICK" | "REPLY"
+  const replied = eventType === "REPLY";
 
   let queueScore = signal.score || 0;
   let whyTag;
 
-  if (signal.replied) {
+  if (replied) {
     // Replies don't cool off — they wait for a response. Age them upward.
     const mult = agingMultiplier("reply_unanswered", hoursAgo);
     queueScore = queueScore * mult;
@@ -84,6 +86,7 @@ function scoreSignalForQueue(signal) {
     raw: signal,
   };
 }
+// Note: `replied` above comes from signal.type === "REPLY", not a boolean flag on the object.
 
 // ── HubSpot tasks (due today / overdue, already fetched with hs_timestamp) ─
 function scoreTaskForQueue(task) {
