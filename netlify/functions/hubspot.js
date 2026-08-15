@@ -827,6 +827,30 @@ function isOooReply(subject, body) {
   return false;
 }
 
+// ── Bounce / delivery-failure detection ──────────────────────────────────────
+// HubSpot's own hs_email_last_reply_date / hs_sales_email_last_replied
+// properties get set even when the "reply" is actually an automated bounce
+// or delivery-failure notice — HubSpot doesn't distinguish these from real
+// human replies on its own. Without this check, a bounced email reads as
+// "they responded," which is exactly backwards for an enablement tool.
+const BOUNCE_SUBJECT_RE = /^(undeliverable|delivery status notification|mail delivery (failed|subsystem)|returned mail|delivery (has )?failed|message (could not be|was not) delivered|failure notice|undelivered mail|delivery incomplete|automatic reply.*undeliverable)/i;
+const BOUNCE_BODY_RE    = /(mailer-daemon|postmaster@|the following recipient\(?s?\)? (could not|couldn't) be (reached|delivered)|your message (wasn't|was not) delivered|permanent failure|delivery (has )?failed|address (not found|rejected)|mailbox (unavailable|not found|full)|550 5\.\d\.\d)/i;
+
+function isBounceReply(subject, body) {
+  if (BOUNCE_SUBJECT_RE.test(subject || "")) return true;
+  if (BOUNCE_BODY_RE.test((body || "").slice(0, 1500))) return true;
+  return false;
+}
+
+// Single entry point for "is this actually a human reply, or something
+// automated (OOO / bounce) that HubSpot's own reply-tracking can't tell
+// apart from a real response." Every place in this file that treats a
+// contact property or engagement as evidence of a genuine reply should run
+// it through this first.
+function isAutomatedReply(subject, body) {
+  return isOooReply(subject, body) || isBounceReply(subject, body);
+}
+
 // Try to extract a return date phrase from OOO body (best-effort)
 function parseOooReturnDate(body) {
   if (!body) return null;
@@ -1100,21 +1124,10 @@ async function computeTaskQueue(user, qp) {
       limit:  200,
     }).catch(() => ({ results: [] }));
 
-    // OOO / auto-reply subject patterns — case-insensitive substring match
-    const OOO_PATTERNS = [
-      "automatic reply",
-      "auto reply",
-      "auto-reply",
-      "out of office",
-      "ooo:",
-      "on vacation",
-      "away from office",
-      "i am out of",
-      "i'm out of",
-      "currently out",
-      "away until",
-      "on leave",
-    ];
+    // OOO/bounce detection now goes through the shared isAutomatedReply()
+    // check (regex-based, covers both out-of-office AND bounce/delivery-
+    // failure patterns) instead of a local substring list that only caught
+    // OOO and missed bounces entirely.
 
     // Fetch incoming email subjects for reply contacts in one batch
     // so we can filter out OOO without N+1 queries
@@ -1144,10 +1157,7 @@ async function computeTaskQueue(user, qp) {
         // and fetch associated contacts
         const oooEmailMap = {};
         const oooEmailIds = (incomingEmails.results || [])
-          .filter(e => {
-            const subj = (e.properties?.hs_email_subject || "").toLowerCase();
-            return OOO_PATTERNS.some(p => subj.startsWith(p) || subj.includes(p));
-          })
+          .filter(e => isAutomatedReply(e.properties?.hs_email_subject || "", e.properties?.hs_email_text || ""))
           .map(e => {
             oooEmailMap[e.id] = {
               subject:   e.properties?.hs_email_subject || null,
@@ -1177,7 +1187,7 @@ async function computeTaskQueue(user, qp) {
             }
           }
 
-          // Now fetch real (non-OOO) incoming emails for the same period
+          // Now fetch real (non-OOO, non-bounce) incoming emails for the same period
           const realEmails = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
             filterGroups: [{
               filters: [
@@ -1185,15 +1195,12 @@ async function computeTaskQueue(user, qp) {
                 { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
               ]
             }],
-            properties: ["hs_email_subject"],
+            properties: ["hs_email_subject", "hs_email_text"],
             limit: 200,
           }).catch(() => ({ results: [] }));
 
           const realEmailIds = (realEmails.results || [])
-            .filter(e => {
-              const subj = (e.properties?.hs_email_subject || "").toLowerCase();
-              return !OOO_PATTERNS.some(p => subj.startsWith(p) || subj.includes(p));
-            })
+            .filter(e => !isAutomatedReply(e.properties?.hs_email_subject || "", e.properties?.hs_email_text || ""))
             .map(e => e.id);
 
           if (realEmailIds.length > 0) {
@@ -1558,7 +1565,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
         const eventType = ev.type;
         let score = 0, label = "";
         if (eventType === "REPLY") {
-          if (isOooReply(ev.subject || null, null)) return null; // handled via OOO to-do flow, not here
+          if (isAutomatedReply(ev.subject || null, null)) return null; // OOO or bounce, handled elsewhere (or not at all, for bounces)
           score = 100; label = "Replied";
         } else if (eventType === "CLICK") { score = 70; label = "Clicked link"; }
         else if (eventType === "OPEN")   { score = 40; label = "Opened"; }
@@ -1704,19 +1711,32 @@ function activeUsersBlobUrl() {
   const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
   return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/active-users.json${sas}`;
 }
-async function registerActiveUser(userId) {
+async function registerActiveUser(userId, email) {
   if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN || !userId) return;
   try {
     const res = await fetch(activeUsersBlobUrl());
-    const data = res.ok ? await res.json() : { userIds: [] };
-    if ((data.userIds || []).includes(userId)) return; // already known, skip the write
+    const data = res.ok ? await res.json() : { userIds: [], profiles: {} };
+    const profiles = data.profiles || {};
+    const alreadyKnown = (data.userIds || []).includes(userId);
+    const emailChanged = email && profiles[userId]?.email !== email;
+    if (alreadyKnown && !emailChanged) return; // nothing new to write
     const updated = [...new Set([...(data.userIds || []), userId])];
+    if (email) profiles[userId] = { email };
     await fetch(activeUsersBlobUrl(), {
       method: "PUT",
       headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
-      body: JSON.stringify({ userIds: updated }),
+      body: JSON.stringify({ userIds: updated, profiles }),
     });
   } catch (e) { console.error("[active-users] registration failed:", e.message); }
+}
+export async function getActiveUserProfiles() {
+  if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return [];
+  try {
+    const res = await fetch(activeUsersBlobUrl());
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.userIds || []).map(userId => ({ userId, email: data.profiles?.[userId]?.email || null }));
+  } catch { return []; }
 }
 export async function getActiveUserIds() {
   if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return [];
@@ -1752,7 +1772,7 @@ export const handler = async (event, context) => {
   }
 
   return withAuth(async (event, context, user) => {
-    registerActiveUser(user.userId); // best-effort, not awaited — never blocks the response
+    registerActiveUser(user.userId, user.email); // best-effort, not awaited — never blocks the response
     const path   = rawPath;
     const method = event.httpMethod;
 
@@ -2816,8 +2836,8 @@ export const handler = async (event, context) => {
             const eventType = ev.type;
             let score = 0, label = "";
             if (eventType === "REPLY") {
-              const ooo = isOooReply(ev.subject || null, null);
-              if (ooo) return null; // OOO — skip from live signals, handled via tasks endpoint
+              const automated = isAutomatedReply(ev.subject || null, null);
+              if (automated) return null; // OOO or bounce — not a real reply, skip from live signals
               score = 100; label = "Replied";
             }
             else if (eventType === "CLICK") { score = 70;  label = "Clicked link"; }
@@ -2996,7 +3016,7 @@ export const handler = async (event, context) => {
       });
 
       // Build signals from contact properties (covers both marketing and sales email types)
-      const contactSignals = (recentContactsData.results || []).map(c => {
+      let contactSignals = (recentContactsData.results || []).map(c => {
         const p    = c.properties || {};
         const info = contactMap[c.id];
 
@@ -3123,6 +3143,54 @@ export const handler = async (event, context) => {
           repliedAt:   eventType === "REPLY" ? primaryTs : null,
         };
       }).filter(Boolean);
+
+      // Filter out OOO/bounce "replies" — hs_email_last_reply_date and
+      // hs_sales_email_last_replied get set by HubSpot even when the
+      // "reply" is an automated bounce or out-of-office responder, since
+      // HubSpot's own tracking doesn't distinguish those from a genuine
+      // human reply. Without this check, Live Signals would show an
+      // auto-responder as if a real person had responded — the exact
+      // problem this pass is fixing.
+      const replySignalsToCheck = contactSignals.filter(s => s.type === "REPLY" && s.contactId);
+      if (replySignalsToCheck.length > 0) {
+        try {
+          const incomingForCheck = await hsPost(user.userId, "/crm/v3/objects/emails/search", {
+            filterGroups: [{
+              filters: [
+                { propertyName: "hs_email_direction", operator: "EQ", value: "INCOMING_EMAIL" },
+                { propertyName: "hs_timestamp", operator: "GTE", value: new Date(since).toISOString() },
+              ],
+            }],
+            properties: ["hs_email_subject", "hs_email_text", "hs_timestamp"],
+            limit: 200,
+          }).catch(() => ({ results: [] }));
+
+          const automatedEmailIds = (incomingForCheck.results || [])
+            .filter(e => isAutomatedReply(e.properties?.hs_email_subject || "", e.properties?.hs_email_text || ""))
+            .map(e => e.id);
+
+          if (automatedEmailIds.length > 0) {
+            const assocData = await hsPost(user.userId, "/crm/v4/associations/emails/contacts/batch/read", {
+              inputs: automatedEmailIds.slice(0, 100).map(id => ({ id })),
+            }).catch(() => ({ results: [] }));
+
+            const automatedContactIds = new Set();
+            for (const r of (assocData.results || [])) {
+              for (const assoc of (r.to || [])) {
+                automatedContactIds.add(String(assoc.toObjectId));
+              }
+            }
+
+            if (automatedContactIds.size > 0) {
+              contactSignals = contactSignals.filter(
+                s => !(s.type === "REPLY" && automatedContactIds.has(String(s.contactId)))
+              );
+            }
+          }
+        } catch (e) {
+          console.error("[signals] automated-reply filter failed:", e.message);
+        }
+      }
 
       // Enrich company names for signals where contact.company is blank
       // Use associatedcompanyid to batch-fetch company names
@@ -6567,6 +6635,83 @@ export const handler = async (event, context) => {
         return ok({ pinned: false, pinnedIds: updated });
       } catch (err) {
         return error(500, `Unpin error: ${err.message}`);
+      }
+    }
+
+    // GET /team/queue?userId=X — admin-only view of another rep's actual
+    // queue. The normal /right-now always operates on the calling user's
+    // own token, so this is a separate, explicitly gated path rather than
+    // adding a userId override to the regular endpoint (keeps the security
+    // boundary obvious: only this one route can ever return someone else's
+    // queue, and only for admins).
+    if (method === "GET" && path === "/team/queue") {
+      if (!isAdminUser(user)) return error(403, "Admin only");
+      try {
+        const targetUserId = qp.userId;
+        if (!targetUserId) return error(400, "userId is required");
+        const queue = await computeRightNowQueue(targetUserId, {});
+        return ok({ queue });
+      } catch (err) {
+        return error(500, `Team queue error: ${err.message}`);
+      }
+    }
+
+    // GET /team — manager roster: every known user's queue depth, oldest
+    // unactioned item, and today's completion count. Admin-only, gated the
+    // same way the existing tab-admin features are.
+    if (method === "GET" && path === "/team") {
+      if (!isAdminUser(user)) return error(403, "Admin only");
+      try {
+        const profiles = await getActiveUserProfiles();
+        const roster = await Promise.all(profiles.map(async (p) => {
+          try {
+            const queue = await computeRightNowQueue(p.userId, {});
+            const todos = await getTodos(p.userId);
+            const completedToday = todos.filter(t => {
+              if (!t.completed || !t.completedAt) return false;
+              return new Date(t.completedAt).toDateString() === new Date().toDateString();
+            }).length;
+            const oldestTimestamp = queue
+              .map(item => item.raw?.timestamp || item.raw?.createdAt || item.raw?.sentAt || null)
+              .filter(Boolean)
+              .sort((a, b) => new Date(a) - new Date(b))[0];
+            const oldestHours = oldestTimestamp ? Math.round((Date.now() - new Date(oldestTimestamp).getTime()) / 3600000) : null;
+            return {
+              userId: p.userId,
+              email: p.email,
+              queueCount: queue.length,
+              oldestHours,
+              completedToday,
+            };
+          } catch (e) {
+            return { userId: p.userId, email: p.email, error: e.message };
+          }
+        }));
+        return ok({ roster });
+      } catch (err) {
+        return error(500, `Team error: ${err.message}`);
+      }
+    }
+
+    // POST /team/push  { targetUserId, text, contactId? }  — manager pushes
+    // a task directly into a rep's Right Now queue, tagged so the rep can
+    // see it came from a manager, not the formula or their own pin.
+    if (method === "POST" && path === "/team/push") {
+      if (!isAdminUser(user)) return error(403, "Admin only");
+      try {
+        const body = JSON.parse(event.body || "{}");
+        if (!body.targetUserId || !body.text?.trim()) return error(400, "targetUserId and text are required");
+        const managerName = user.email || "Manager";
+        const item = await addTodo(body.targetUserId, {
+          text: body.text.trim(),
+          contactId: body.contactId || null,
+          autoDetected: false,
+          priority: "HIGH",
+          assignedBy: managerName,
+        });
+        return ok({ item });
+      } catch (err) {
+        return error(500, `Push error: ${err.message}`);
       }
     }
 

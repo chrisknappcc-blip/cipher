@@ -201,14 +201,20 @@ function scoreTodoForQueue(todo) {
   // To-dos don't cool or age automatically — they're explicit asks.
   // Small aging nudge so stale to-dos don't get buried forever.
   const mult = hoursOld != null ? 1 + Math.min(hoursOld / 48, 0.5) : 1;
+  // A manager pushing something into your queue is a stronger signal than
+  // a formula score — bump it up so it doesn't get buried under routine items.
+  const managerBoost = todo.assignedBy ? 1.15 : 1;
   return {
     source: "todo",
     id: `todo-${todo.id}`,
     contactId: todo.contactId || null,
     contact: null,
     label: todo.text,
-    queueScore: Math.round(base * mult),
-    whyTag: todo.subtext || (todo.autoDetected ? "Auto-detected" : "Manual to-do"),
+    queueScore: Math.round(base * mult * managerBoost),
+    whyTag: todo.assignedBy
+      ? `From ${todo.assignedBy}${todo.subtext ? " — " + todo.subtext : ""}`
+      : (todo.subtext || (todo.autoDetected ? "Auto-detected" : "Manual to-do")),
+    assignedBy: todo.assignedBy || null,
     raw: todo,
   };
 }
