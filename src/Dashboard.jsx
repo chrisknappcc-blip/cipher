@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { apiFetch } from './api'
 import RightNowView from './RightNowView'
+import TeamView from './TeamView'
 
 // ─── Persona detection ────────────────────────────────────────────────────────
 const PERSONAS = {
@@ -2302,6 +2303,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     { key:'gold-command',  label:'Gold Accounts', icon:'star' },
     { key:'gold-overview', label:'Gold Overview', icon:'grid' },
     { key:'reports',       label:'Reports', icon:'chart' },
+    { key:'team',          label:'Team',    icon:'users' },
   ]
 
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -2321,6 +2323,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     if (name === 'grid')  return <svg {...common}><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
     if (name === 'chart') return <svg {...common}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
     if (name === 'list')  return <svg {...common}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    if (name === 'users') return <svg {...common}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
     return null
   }
 
@@ -2409,6 +2412,10 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
 
         {activeTab === 'right-now' && (
           <RightNowView getToken={getToken} />
+        )}
+
+        {activeTab === 'team' && (
+          <TeamView getToken={getToken} />
         )}
 
         {activeTab === 'dashboard' && (
