@@ -6871,6 +6871,67 @@ export const handler = async (event, context) => {
       }
     }
 
+    // GET /pipeline-review/discussed — which deal IDs are marked discussed
+    // in the current meeting session. Persisted (not just client state) so
+    // a page reload mid-meeting doesn't lose progress, but explicitly reset
+    // via the endpoint below rather than auto-expiring — a facilitator
+    // should control when a new meeting cycle starts, not a timer guessing.
+    if (method === "GET" && path === "/pipeline-review/discussed") {
+      try {
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ dealIds: [] });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pipeline-discussed-${user.userId}.json${sas}`;
+        const res = await fetch(url);
+        if (!res.ok) return ok({ dealIds: [] });
+        const data = await res.json();
+        return ok({ dealIds: data.dealIds || [] });
+      } catch (err) {
+        return ok({ dealIds: [], error: err.message });
+      }
+    }
+
+    // POST /pipeline-review/discussed  { dealId, discussed: true|false }
+    if (method === "POST" && path === "/pipeline-review/discussed") {
+      try {
+        const body = JSON.parse(event.body || "{}");
+        if (!body.dealId) return error(400, "dealId is required");
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ dealIds: [] });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pipeline-discussed-${user.userId}.json${sas}`;
+        const res = await fetch(url);
+        const data = res.ok ? await res.json() : { dealIds: [] };
+        const current = new Set(data.dealIds || []);
+        body.discussed ? current.add(body.dealId) : current.delete(body.dealId);
+        const updated = [...current];
+        await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+          body: JSON.stringify({ dealIds: updated }),
+        });
+        return ok({ dealIds: updated });
+      } catch (err) {
+        return error(500, `Discussed error: ${err.message}`);
+      }
+    }
+
+    // POST /pipeline-review/discussed/reset — clear all discussed flags,
+    // for starting the next bi-weekly meeting cycle clean.
+    if (method === "POST" && path === "/pipeline-review/discussed/reset") {
+      try {
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ dealIds: [] });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pipeline-discussed-${user.userId}.json${sas}`;
+        await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+          body: JSON.stringify({ dealIds: [] }),
+        });
+        return ok({ dealIds: [] });
+      } catch (err) {
+        return error(500, `Reset error: ${err.message}`);
+      }
+    }
+
     return error(404, "Route not found");
 
   })(event, context);
