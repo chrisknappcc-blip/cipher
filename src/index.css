@@ -4,34 +4,126 @@
   --font: 'DM Sans', sans-serif;
   --font-mono: 'DM Mono', monospace;
 
-  --bg: #F7F6F3;
-  --bg-panel: #FFFFFF;
-  --bg-secondary: #F0EEE9;
-  --bg-hover: #ECEAE4;
-
-  --text: #1A1916;
-  --text-secondary: #6B6A65;
-  --text-tertiary: #9B9A96;
-
-  --border: rgba(0,0,0,0.08);
-  --border-strong: rgba(0,0,0,0.14);
-
-  --accent: #1D6F4F;
-  --accent-light: #E3F2EC;
-  --accent-text: #0D4D34;
-
   --red: #C5372A;
   --red-light: #FCECEA;
   --amber: #B45309;
   --amber-light: #FEF3C7;
-  --blue: #1D4ED8;
-  --blue-light: #EFF6FF;
 
   --radius: 10px;
   --radius-lg: 16px;
   --radius-xl: 20px;
   --shadow: 0 1px 3px rgba(0,0,0,0.06);
   --shadow-soft: 0 2px 12px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.04);
+}
+
+/* ── Light mode — ebook/paper off-white, not stark clinical white ──────────
+   Every theme below shares this same warm-paper approach — a clearly
+   deeper page background so panels/cards visibly float above it, not a
+   background and panel that are within a few points of each other. */
+
+[data-theme="light"] {
+  /* Functional colors — these were previously ONLY defined for dark mode,
+     which meant every urgency color, pin color, and manager-push color was
+     completely undefined in light mode. That's the real reason cards had
+     no visible color differentiation — color-mix() with an undefined
+     variable just falls through to the plain background, so every "hot"
+     or "cooling" card rendered identically. Re-tuned darker/more saturated
+     than the dark-mode versions, since a pale lime or cyan that glows on
+     navy just washes out against a light background. */
+  --urgency-hot: #92790A;
+  --urgency-warm: #1C7FA8;
+  --urgency-cooling: #6B7A88;
+  --urgency-stale: #B33A30;
+  --pin-color: #B84FA0;
+  --manager-color: #7B4FB0;
+  --shadow: 0 1px 3px rgba(45,35,15,0.12);
+  --shadow-soft: 0 4px 18px rgba(45,35,15,0.16), 0 1px 4px rgba(45,35,15,0.12);
+}
+
+[data-theme="light"]:not([data-color-theme]),
+[data-theme="light"][data-color-theme="navy"] {
+  --bg: #E7DFC8;
+  --bg-panel: #FDFBF5;
+  --bg-secondary: #F1EAD8;
+  --bg-hover: #E4D9BC;
+  --text: #201C13;
+  --text-secondary: #55492F;
+  --text-tertiary: #7D6F4E;
+  --border: #CBBB92;
+  --border-strong: #AD9968;
+  --accent: #1C6FBE;
+  --accent-light: #DCEAF8;
+  --accent-text: #0F4C85;
+  --blue: #1C6FBE;
+  --blue-light: #DCEAF8;
+}
+
+[data-theme="light"][data-color-theme="forest"] {
+  --bg: #E0E5CB;
+  --bg-panel: #FBFCF3;
+  --bg-secondary: #EDF0DC;
+  --bg-hover: #DEE4C4;
+  --text: #1B2015;
+  --text-secondary: #4B5540;
+  --text-tertiary: #71805D;
+  --border: #C1CBA0;
+  --border-strong: #9FAC78;
+  --accent: #1D7A4F;
+  --accent-light: #DCF0E4;
+  --accent-text: #0E4E2E;
+  --blue: #1D7A4F;
+  --blue-light: #DCF0E4;
+}
+
+[data-theme="light"][data-color-theme="plum"] {
+  --bg: #E3D6DF;
+  --bg-panel: #FCF8FB;
+  --bg-secondary: #F0E6EE;
+  --bg-hover: #E2D2E0;
+  --text: #201A1F;
+  --text-secondary: #554653;
+  --text-tertiary: #7D6A7A;
+  --border: #C9AEC5;
+  --border-strong: #A987A3;
+  --accent: #7A3FA8;
+  --accent-light: #EEE0F5;
+  --accent-text: #4C2568;
+  --blue: #7A3FA8;
+  --blue-light: #EEE0F5;
+}
+
+[data-theme="light"][data-color-theme="slate"] {
+  --bg: #DCE0DA;
+  --bg-panel: #FAFBF9;
+  --bg-secondary: #EBEEE9;
+  --bg-hover: #D8DDD5;
+  --text: #191E1B;
+  --text-secondary: #48524A;
+  --text-tertiary: #6D786E;
+  --border: #B7C0B5;
+  --border-strong: #92A08F;
+  --accent: #3D6E8C;
+  --accent-light: #DDEBF1;
+  --accent-text: #1F4054;
+  --blue: #3D6E8C;
+  --blue-light: #DDEBF1;
+}
+
+[data-theme="light"][data-color-theme="sunset"] {
+  --bg: #E8D8B9;
+  --bg-panel: #FCF6EA;
+  --bg-secondary: #F2E5C9;
+  --bg-hover: #E3CE9F;
+  --text: #211A0F;
+  --text-secondary: #574727;
+  --text-tertiary: #7E6A40;
+  --border: #CBAE79;
+  --border-strong: #AB8850;
+  --accent: #C4602A;
+  --accent-light: #F5E1CC;
+  --accent-text: #833B14;
+  --blue: #C4602A;
+  --blue-light: #F5E1CC;
 }
 
 [data-theme="dark"] {
@@ -143,14 +235,6 @@
   --blue: #F0A468;
   --blue-light: #3F2C1E;
 }
-
-/* Light mode accent swap per theme — background stays the one neutral
-   cream palette, only the accent color changes so the picker still does
-   something meaningful without needing five full light palettes. */
-[data-theme="light"][data-color-theme="forest"] { --accent: #1D7A4F; --accent-text: #0D5534; }
-[data-theme="light"][data-color-theme="plum"]   { --accent: #7A3FA8; --accent-text: #5A2680; }
-[data-theme="light"][data-color-theme="slate"]   { --accent: #3D6E8C; --accent-text: #244B5F; }
-[data-theme="light"][data-color-theme="sunset"]  { --accent: #C4602A; --accent-text: #8F4318; }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
