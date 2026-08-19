@@ -2419,7 +2419,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
       <div style={{ flex:1, padding:'1.5rem', maxWidth:1280, margin:'0 auto', width:'100%' }}>
 
         {activeTab === 'right-now' && (
-          <RightNowView getToken={getToken} />
+          <RightNowView getToken={getToken} user={user} />
         )}
 
         {activeTab === 'team' && (

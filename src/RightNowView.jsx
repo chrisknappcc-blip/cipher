@@ -65,6 +65,21 @@ function NameCompanyLine({ item }) {
   )
 }
 
+function RepInfoLine({ item }) {
+  const c = item.contact
+  if (!c) return null
+  const parts = []
+  if (c.assignedBdr) parts.push(`BDR: ${c.assignedBdr}`)
+  if (c.ownerName) parts.push(`Owner: ${c.ownerName}`)
+  if (c.primaryOutreachRep) parts.push(`Outreach: ${c.primaryOutreachRep}`)
+  if (parts.length === 0) return null
+  return (
+    <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 2 }}>
+      {parts.join(' · ')}
+    </div>
+  )
+}
+
 function sourceLabel(source) {
   if (source === 'todo') return 'To-do'
   if (source === 'signal') return 'Email activity'
@@ -107,7 +122,7 @@ function looksLikeItNeedsAReply(body) {
   return !!body && body.includes('?')
 }
 
-export default function RightNowView({ getToken }) {
+export default function RightNowView({ getToken, user }) {
   const [queue, setQueue] = useState([])
   const [top5Picks, setTop5Picks] = useState([]) // raw {id, rank, rationale} from the scheduled job
   const [pinnedIds, setPinnedIds] = useState(new Set())
@@ -415,6 +430,10 @@ export default function RightNowView({ getToken }) {
 
       <div style={{ padding: '22px 26px', background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
+        <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginBottom: 14 }}>
+          Viewing <strong style={{ color: 'var(--text-secondary)' }}>{user?.user_metadata?.full_name || user?.email || 'your'}</strong>'s Right Now Queue
+        </div>
+
         {error && (
           <div style={{ background: 'var(--red-light)', color: 'var(--red)', padding: '10px 14px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 16 }}>
             {error}
@@ -482,6 +501,7 @@ export default function RightNowView({ getToken }) {
                       <span style={{ fontSize: 15 }}>📅</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={item} /></div>
+                        <RepInfoLine item={item} />
                         <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>{item.whyTag}</div>
                       </div>
                     </div>
@@ -519,6 +539,7 @@ export default function RightNowView({ getToken }) {
                         )}
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={item} /></div>
+                        <RepInfoLine item={item} />
                           <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
                             <span style={{ color: 'var(--text-tertiary)' }}>Why: </span>{item.rationale || item.whyTag}
                           </div>
@@ -580,6 +601,7 @@ export default function RightNowView({ getToken }) {
                       style={{ width: 17, height: 17, borderRadius: 6, border: '1.5px solid var(--border-strong)', background: 'var(--bg)', cursor: 'pointer', flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={item} /></div>
+                        <RepInfoLine item={item} />
                       <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
                         <span style={{ color: 'var(--text-tertiary)' }}>{sourceLabel(item.source)} · </span>{item.whyTag || 'No reason recorded'}
                       </div>
@@ -626,7 +648,7 @@ export default function RightNowView({ getToken }) {
               ) : displayName(selectedItem)}
             </div>
             {displayCompany(selectedItem) && (
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
                 {selectedItem.contact?.companyUrl ? (
                   <a href={selectedItem.contact.companyUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline', textDecorationColor: 'var(--border-strong)' }}>
                     {displayCompany(selectedItem)}
@@ -634,6 +656,9 @@ export default function RightNowView({ getToken }) {
                 ) : displayCompany(selectedItem)}
               </div>
             )}
+            <div style={{ marginBottom: 14 }}>
+              <RepInfoLine item={selectedItem} />
+            </div>
             {contactDetail?.lastSequenceName && (
               <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginBottom: 14 }}>
                 Last sequence: {contactDetail.lastSequenceName}
