@@ -189,10 +189,13 @@ export default function PipelineReviewView({ getToken }) {
   const loadDealsRef = useRef(loadDeals)
   useEffect(() => { loadDealsRef.current = loadDeals }, [loadDeals])
 
-  // Auto-refresh every 90s while this tab is open, so data stays current
-  // during the live meeting without anyone needing to remember to refresh.
+  // Auto-refresh twice a day — this was firing every 90 seconds before,
+  // which was excessive for a bi-weekly meeting tool and just meant
+  // constant background API calls with no real benefit. Manual "Refresh
+  // now" (below) is there for the actual moment it matters — right before
+  // or during the meeting.
   useEffect(() => {
-    const interval = setInterval(() => loadDealsRef.current(), 90 * 1000)
+    const interval = setInterval(() => loadDealsRef.current(), 12 * 60 * 60 * 1000)
     return () => clearInterval(interval)
   }, [])
 
