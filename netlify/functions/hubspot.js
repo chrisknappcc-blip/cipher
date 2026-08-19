@@ -1723,7 +1723,74 @@ export async function computeRightNowQueue(userId, qp = {}) {
       })),
     });
 
+    // ── Enrich contacts with real company links and last-sequence info ────
+    // normalizeContact's "company" field is a free-text property, not an
+    // actual linked company record — there's no ID there to build a
+    // HubSpot link from. This does one batch fetch for real company
+    // associations across every contact referenced in the queue, plus one
+    // batch fetch for each contact's most recent sequence enrollment.
+    const queueContactIds = [...new Set(queue.map(item => item.contactId).filter(Boolean))];
+    if (queueContactIds.length > 0) {
+      const contactCompanyAssoc = await batchFetchAssociations(userId, "contacts", "companies", queueContactIds);
+      const allCompanyIds = [...new Set(Object.values(contactCompanyAssoc).flat())];
+      const companyNamesById = {};
+      if (allCompanyIds.length > 0) {
+        for (let i = 0; i < allCompanyIds.length; i += 100) {
+          const chunk = allCompanyIds.slice(i, i + 100);
+          const batch = await hsPost(userId, "/crm/v3/objects/companies/batch/read", {
+            inputs: chunk.map(id => ({ id })),
+            properties: ["name"],
+          }).catch(() => ({ results: [] }));
+          (batch.results || []).forEach(c => { companyNamesById[c.id] = c.properties?.name || null; });
+        }
+      }
+
+      // Most recent sequence enrollment per contact — one call each,
+      // unavoidable (no bulk "enrollments for many contacts" endpoint),
+      // bounded to the contacts actually in this queue, not the whole book.
+      const sequenceByContact = {};
+      await Promise.all(queueContactIds.map(async cid => {
+        const enrollments = await fetchSequenceEnrollments(userId, cid).catch(() => []);
+        if (enrollments.length > 0) {
+          const mostRecent = enrollments.sort((a, b) => new Date(b.enrolledAt || 0) - new Date(a.enrolledAt || 0))[0];
+          sequenceByContact[cid] = mostRecent.subject || null;
+        }
+      }));
+
+      queue.forEach(item => {
+        if (!item.contactId || !item.contact) return;
+        const companyId = (contactCompanyAssoc[item.contactId] || [])[0] || null;
+        item.contact = {
+          ...item.contact,
+          companyId,
+          companyName: companyId ? (companyNamesById[companyId] || item.contact.company) : (item.contact.company || null),
+          contactUrl: `https://app.hubspot.com/contacts/39921549/record/0-1/${item.contactId}`,
+          companyUrl: companyId ? `https://app.hubspot.com/contacts/39921549/record/0-2/${companyId}` : null,
+          lastSequenceName: sequenceByContact[item.contactId] || null,
+        };
+      });
+    }
+
     return queue;
+}
+
+// Real batch associations fetch. HubSpot's Search API never returns an
+// associations block no matter what's passed to it — confirmed HubSpot
+// behavior, documented as still true as of 2025 — so associations always
+// need this separate call after searching, never the search request itself.
+async function batchFetchAssociations(userId, fromType, toType, ids) {
+  if (ids.length === 0) return {};
+  const result = {};
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    const data = await hsPost(userId, `/crm/v4/associations/${fromType}/${toType}/batch/read`, {
+      inputs: chunk.map(id => ({ id })),
+    }).catch(() => ({ results: [] }));
+    (data.results || []).forEach(r => {
+      result[r.from?.id] = (r.to || []).map(t => t.toObjectId);
+    });
+  }
+  return result;
 }
 
 // ─── Active user registry ───────────────────────────────────────────────────
@@ -6968,25 +7035,6 @@ export const handler = async (event, context) => {
       } catch (err) {
         return error(500, `Pipeline review company search error: ${err.message}`);
       }
-    }
-
-    // Real batch associations fetch. The Search API (used just below) never
-    // returns an associations block no matter what's passed to it — that's
-    // documented and confirmed HubSpot behavior, not a bug on our end — so
-    // associations always need this separate call after searching.
-    async function batchFetchAssociations(userId, fromType, toType, ids) {
-      if (ids.length === 0) return {};
-      const result = {};
-      for (let i = 0; i < ids.length; i += 100) {
-        const chunk = ids.slice(i, i + 100);
-        const data = await hsPost(userId, `/crm/v4/associations/${fromType}/${toType}/batch/read`, {
-          inputs: chunk.map(id => ({ id })),
-        }).catch(() => ({ results: [] }));
-        (data.results || []).forEach(r => {
-          result[r.from?.id] = (r.to || []).map(t => t.toObjectId);
-        });
-      }
-      return result;
     }
 
     if (method === "GET" && path === "/pipeline-review") {
