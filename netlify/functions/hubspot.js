@@ -1588,24 +1588,37 @@ export async function computeRightNowQueue(userId, qp = {}) {
     const meetingWindowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
     const meetingWindowEnd   = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
+    // Scope to the current user's own meetings — this query previously had
+    // no owner filter at all, confirmed by testing it directly: with zero
+    // filters it returns every meeting in the entire portal (2,858 results),
+    // meaning Today's Meetings was showing everyone's meetings, not just
+    // the logged-in rep's own calendar.
+    let meetingOwnerId = null;
+    try {
+      const meData = await hsGet(userId, "/crm/v3/owners/me", {});
+      meetingOwnerId = meData?.id || null;
+    } catch { /* fall through without owner scoping if this fails */ }
+
     const meetData = await hsPost(userId, "/crm/v3/objects/meetings/search", {
       filterGroups: [{
         filters: [
           { propertyName: "hs_meeting_start_time", operator: "GTE", value: meetingWindowStart.toISOString() },
           { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
+          ...(meetingOwnerId ? [{ propertyName: "hubspot_owner_id", operator: "EQ", value: meetingOwnerId }] : []),
         ],
       }],
       properties: ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time"],
-      associations: ["contacts"],
       limit: 100,
     }).catch(() => ({ results: [] }));
 
     const hsMeetingsRaw = meetData.results || [];
-    const meetingContactIds = [...new Set(
-      hsMeetingsRaw
-        .map(m => m.associations?.contacts?.results?.[0]?.id)
-        .filter(Boolean)
-    )];
+    // The Search API never returns an associations block (same confirmed
+    // HubSpot limitation already fixed elsewhere for deals) — the old
+    // `associations: ["contacts"]` param here was silently ignored, meaning
+    // every HubSpot-logged meeting lost its contact link and showed with no
+    // name/company attached. Real batch fetch instead.
+    const meetingContactAssoc = await batchFetchAssociations(userId, "meetings", "contacts", hsMeetingsRaw.map(m => m.id));
+    const meetingContactIds = [...new Set(Object.values(meetingContactAssoc).flat())];
 
     // ── Batch-fetch all contacts we need in one call (signals + meetings) ─
     const allContactIds = [...new Set([...eventContactIds, ...meetingContactIds])];
@@ -1659,7 +1672,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
     // ── Attach contactId to each HubSpot meeting from its association ────
     const hsMeetings = hsMeetingsRaw.map(m => ({
       ...m,
-      contactId: m.associations?.contacts?.results?.[0]?.id || null,
+      contactId: (meetingContactAssoc[m.id] || [])[0] || null,
     }));
 
     // ── Outlook meetings, same window ────────────────────────────────────
@@ -1789,18 +1802,6 @@ export async function computeRightNowQueue(userId, qp = {}) {
         }
       }
 
-      // Most recent sequence enrollment per contact — one call each,
-      // unavoidable (no bulk "enrollments for many contacts" endpoint),
-      // bounded to the contacts actually in this queue, not the whole book.
-      const sequenceByContact = {};
-      await Promise.all(queueContactIds.map(async cid => {
-        const enrollments = await fetchSequenceEnrollments(userId, cid).catch(() => []);
-        if (enrollments.length > 0) {
-          const mostRecent = enrollments.sort((a, b) => new Date(b.enrolledAt || 0) - new Date(a.enrolledAt || 0))[0];
-          sequenceByContact[cid] = mostRecent.subject || null;
-        }
-      }));
-
       queue.forEach(item => {
         if (!item.contactId || !item.contact) return;
         const companyId = (contactCompanyAssoc[item.contactId] || [])[0] || null;
@@ -1810,7 +1811,6 @@ export async function computeRightNowQueue(userId, qp = {}) {
           companyName: companyId ? (companyNamesById[companyId] || item.contact.company) : (item.contact.company || null),
           contactUrl: `https://app.hubspot.com/contacts/39921549/record/0-1/${item.contactId}`,
           companyUrl: companyId ? `https://app.hubspot.com/contacts/39921549/record/0-2/${companyId}` : null,
-          lastSequenceName: sequenceByContact[item.contactId] || null,
         };
       });
     }
@@ -2106,8 +2106,14 @@ export const handler = async (event, context) => {
         fetchEngagements(user.userId, id, 20),
       ]);
       const contactEmail = contact.properties?.email;
-      const lastMeeting = await findLastMeeting(user.userId, engagements, [contactEmail]);
-      return ok({ contact, engagements, lastMeeting });
+      const [lastMeeting, sequenceEnrollments] = await Promise.all([
+        findLastMeeting(user.userId, engagements, [contactEmail]),
+        fetchSequenceEnrollments(user.userId, id).catch(() => []),
+      ]);
+      const lastSequenceName = sequenceEnrollments.length > 0
+        ? sequenceEnrollments.sort((a, b) => new Date(b.enrolledAt || 0) - new Date(a.enrolledAt || 0))[0].subject || null
+        : null;
+      return ok({ contact, engagements, lastMeeting, lastSequenceName });
     }
 
     // ── Full merged activity feed for a contact ──────────────────────────────
