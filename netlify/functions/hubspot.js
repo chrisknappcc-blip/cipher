@@ -1596,17 +1596,26 @@ export async function computeRightNowQueue(userId, qp = {}) {
     // meaning Today's Meetings was showing everyone's meetings, not just
     // the logged-in rep's own calendar.
     let meetingOwnerId = null;
+    let currentUserName = null;
     try {
       const meData = await hsGet(userId, "/crm/v3/owners/me", {});
       meetingOwnerId = meData?.id || null;
+      currentUserName = meData ? `${meData.firstName || ""} ${meData.lastName || ""}`.trim() : null;
     } catch { /* fall through without owner scoping if this fails */ }
 
+    // No owner filter here anymore — a meeting RECORD's own owner (often
+    // whoever created/synced the calendar entry) is a different thing from
+    // who the ACCOUNT actually belongs to. Filtering by meeting-owner was
+    // both too strict (excluded genuine internal meetings the user attended
+    // but didn't "own" in HubSpot) and wrong for account-based cases (a
+    // meeting record can say "Joe" while the underlying contact is BDR-
+    // assigned to someone else entirely). Real filtering happens below,
+    // after matching each meeting to its contact.
     const meetData = await hsPost(userId, "/crm/v3/objects/meetings/search", {
       filterGroups: [{
         filters: [
           { propertyName: "hs_meeting_start_time", operator: "GTE", value: meetingWindowStart.toISOString() },
           { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
-          ...(meetingOwnerId ? [{ propertyName: "hubspot_owner_id", operator: "EQ", value: meetingOwnerId }] : []),
         ],
       }],
       properties: ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time"],
@@ -1715,6 +1724,26 @@ export async function computeRightNowQueue(userId, qp = {}) {
     // ── Merge, dedup, score ───────────────────────────────────────────────
     const mergedMeetings = mergeMeetings(hsMeetings, outlookEvents, contactMap, contactsByEmail);
 
+    // Filter to meetings that actually belong to this user's own accounts.
+    // A meeting with a matched contact only counts as "mine" if I'm the
+    // assigned BDR / Primary Outreach Rep / owner on that contact — not
+    // just because the raw meeting record happens to be on my calendar or
+    // owned by me in HubSpot's eyes. This is what fixes seeing a colleague's
+    // account meeting (I was CC'd/attending) and also fixes the reverse —
+    // a meeting record misattributed to someone else even though the
+    // account is genuinely mine. Contactless meetings (internal, no CRM
+    // contact to check) are kept as-is; there's no better signal without
+    // more work, and they're already protected by the Gong-title filter.
+    const myMeetings = mergedMeetings.filter(m => {
+      if (!m.contact) return true;
+      const c = m.contact;
+      return (
+        (currentUserName && c.assignedBdr === currentUserName) ||
+        (currentUserName && c.primaryOutreachRep === currentUserName) ||
+        (meetingOwnerId && String(c.ownerId) === String(meetingOwnerId))
+      );
+    });
+
     // ── Sequence state — sequences are now the primary outreach channel,
     // so a sequence quietly ending with no next step decided is a real gap.
     // Bounded to the first 30 currently-enrolled contacts per run to keep
@@ -1743,7 +1772,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
 
     // ── Confirmation to-do: fire once per meeting, 3 days out ────────────
     const confirmedIds = await getConfirmedMeetingIds(userId);
-    for (const meeting of mergedMeetings) {
+    for (const meeting of myMeetings) {
       meeting.confirmationTaskCreated = confirmedIds.has(meeting.id);
       if (needsConfirmationTask(meeting)) {
         const todo = buildConfirmationTodo(meeting);
@@ -1773,7 +1802,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
       ],
       tasks: dueTasksForQueue,
       todos,
-      meetings: mergedMeetings.map(m => ({
+      meetings: myMeetings.map(m => ({
         id: m.id,
         startTime: m.startTime,
         contactId: m.contactId,
