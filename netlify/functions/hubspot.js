@@ -6797,7 +6797,7 @@ export const handler = async (event, context) => {
 
         const dealsData = await hsPost(user.userId, "/crm/v3/objects/deals/search", {
           filterGroups: [{ filters }],
-          properties: ["dealname", "dealstage", "pipeline", "amount", "hs_next_step", "hubspot_owner_id", "hs_lastmodifieddate", "closedate"],
+          properties: ["dealname", "dealstage", "pipeline", "amount", "hs_next_step", "hubspot_owner_id", "hs_lastmodifieddate", "closedate", "notes_last_updated", "num_notes"],
           associations: ["companies"],
           sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
           limit: 200,
@@ -6836,6 +6836,8 @@ export const handler = async (event, context) => {
           ownerName: ownersById[String(d.properties?.hubspot_owner_id)] || null,
           companyName: companiesById[d.associations?.companies?.results?.[0]?.id] || null,
           lastModified: d.properties?.hs_lastmodifieddate || null,
+          lastContact: d.properties?.notes_last_updated || null, // real "last contact" — notes/calls/emails/meetings/tasks, not just any field edit
+          activityCount: d.properties?.num_notes ? Number(d.properties.num_notes) : 0,
           closeDate: d.properties?.closedate || null,
         }));
 
