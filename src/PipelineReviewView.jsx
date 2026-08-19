@@ -1,17 +1,21 @@
 // src/PipelineReviewView.jsx
-// NEW FILE — path from repo root: src/PipelineReviewView.jsx
+// REPLACE — path from repo root: src/PipelineReviewView.jsx
 //
 // Built for the bi-weekly leadership pipeline walkthrough. Three pipelines
-// (Opportunity, Deal, Expansion — using HubSpot's own labels even though,
-// confusingly, "Opportunity" actually holds the early-funnel stages and
-// "Deal" holds the late-stage ones on this portal — verified against real
-// data, not assumed), each broken into stages, whole team by default with
-// an owner filter to narrow to one person.
+// (using HubSpot's own pipeline and stage names exactly, verified against
+// live data rather than assumed), each broken into stages, whole team by
+// default with an owner filter to narrow to one person.
 //
-// Next steps come straight from HubSpot's hs_next_step property, which your
-// team already maintains manually — no AI involved. The recap panel pulls
-// real logged engagements (notes, calls, meetings) for whichever deal is
-// selected, fetched on click rather than upfront for the whole list.
+// This pass adds: sort (amount, close date, last contact, name) applied
+// within each stage group, filters (amount range, close date range, stale
+// deals only), and a redesigned card with a prominent stat row — amount,
+// close date, and last contact are now bold and color-coded instead of
+// buried in a small gray subtitle line.
+//
+// "Last contact" uses notes_last_updated (HubSpot's own "Last Activity
+// Date" — auto-maintained across notes/calls/emails/meetings/tasks), not
+// hs_lastmodifieddate, since the latter just means "some field changed,"
+// not "someone actually engaged with this deal."
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { apiFetch } from './api'
@@ -28,6 +32,39 @@ function daysAgo(iso) {
   return Math.round((Date.now() - new Date(iso).getTime()) / 86400000)
 }
 
+function daysUntil(iso) {
+  if (!iso) return null
+  return Math.round((new Date(iso).getTime() - Date.now()) / 86400000)
+}
+
+function formatDate(iso) {
+  if (!iso) return null
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function lastContactColor(iso) {
+  const d = daysAgo(iso)
+  if (d == null) return 'var(--text-tertiary)'
+  if (d > 30) return 'var(--urgency-stale)'
+  if (d > 14) return 'var(--amber)'
+  return 'var(--text-secondary)'
+}
+
+function closeDateColor(iso) {
+  const d = daysUntil(iso)
+  if (d == null) return 'var(--text-tertiary)'
+  if (d < 0) return 'var(--urgency-stale)' // past close date, still open — worth calling out
+  if (d <= 14) return 'var(--amber)'
+  return 'var(--text-secondary)'
+}
+
+const SORT_OPTIONS = [
+  { key: 'closeDate', label: 'Close date' },
+  { key: 'amount', label: 'Deal size' },
+  { key: 'lastContact', label: 'Last contact' },
+  { key: 'name', label: 'Name' },
+]
+
 export default function PipelineReviewView({ getToken }) {
   const [config, setConfig] = useState(null)
   const [owners, setOwners] = useState([])
@@ -42,7 +79,15 @@ export default function PipelineReviewView({ getToken }) {
   const [recapLoading, setRecapLoading] = useState(false)
   const [collapsedStages, setCollapsedStages] = useState(new Set())
 
-  // Load pipeline config + owner list once on mount
+  const [sortField, setSortField] = useState('closeDate')
+  const [sortDir, setSortDir] = useState('asc')
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [minAmount, setMinAmount] = useState('')
+  const [maxAmount, setMaxAmount] = useState('')
+  const [closeBefore, setCloseBefore] = useState('')
+  const [closeAfter, setCloseAfter] = useState('')
+  const [staleOnly, setStaleOnly] = useState(false)
+
   useEffect(() => {
     Promise.all([
       apiFetch('/api/hubspot/pipeline-review/config', getToken),
@@ -74,16 +119,40 @@ export default function PipelineReviewView({ getToken }) {
 
   useEffect(() => { loadDeals() }, [loadDeals])
 
+  const filteredDeals = useMemo(() => {
+    return deals.filter(d => {
+      if (minAmount && (!d.amount || Number(d.amount) < Number(minAmount))) return false
+      if (maxAmount && (!d.amount || Number(d.amount) > Number(maxAmount))) return false
+      if (closeBefore && (!d.closeDate || new Date(d.closeDate) > new Date(closeBefore))) return false
+      if (closeAfter && (!d.closeDate || new Date(d.closeDate) < new Date(closeAfter))) return false
+      if (staleOnly && !(daysAgo(d.lastContact) > 14)) return false
+      return true
+    })
+  }, [deals, minAmount, maxAmount, closeBefore, closeAfter, staleOnly])
+
+  const sortedDeals = useMemo(() => {
+    const sorted = [...filteredDeals]
+    sorted.sort((a, b) => {
+      let av, bv
+      if (sortField === 'amount') { av = Number(a.amount) || 0; bv = Number(b.amount) || 0 }
+      else if (sortField === 'closeDate') { av = a.closeDate ? new Date(a.closeDate).getTime() : Infinity; bv = b.closeDate ? new Date(b.closeDate).getTime() : Infinity }
+      else if (sortField === 'lastContact') { av = a.lastContact ? new Date(a.lastContact).getTime() : 0; bv = b.lastContact ? new Date(b.lastContact).getTime() : 0 }
+      else { av = (a.name || '').toLowerCase(); bv = (b.name || '').toLowerCase() }
+      if (av < bv) return sortDir === 'asc' ? -1 : 1
+      if (av > bv) return sortDir === 'asc' ? 1 : -1
+      return 0
+    })
+    return sorted
+  }, [filteredDeals, sortField, sortDir])
+
   const dealsByStage = useMemo(() => {
     const map = {}
     for (const stage of stages) map[stage.id] = []
-    for (const deal of deals) {
+    for (const deal of sortedDeals) {
       if (map[deal.stageId]) map[deal.stageId].push(deal)
-      else if (!map['_unknown']) map['_unknown'] = [deal]
-      else map['_unknown'].push(deal)
     }
     return map
-  }, [deals, stages])
+  }, [sortedDeals, stages])
 
   const selectedDeal = deals.find(d => d.id === selectedDealId) || null
 
@@ -106,6 +175,11 @@ export default function PipelineReviewView({ getToken }) {
     })
   }
 
+  const clearFilters = () => {
+    setMinAmount(''); setMaxAmount(''); setCloseBefore(''); setCloseAfter(''); setStaleOnly(false)
+  }
+  const filtersActive = minAmount || maxAmount || closeBefore || closeAfter || staleOnly
+
   if (!config) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
@@ -114,12 +188,14 @@ export default function PipelineReviewView({ getToken }) {
     )
   }
 
+  const inputStyle = { background: 'var(--bg-secondary)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12, padding: '6px 9px', width: 110 }
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, background: 'var(--bg)', color: 'var(--text)', minHeight: '100%', padding: 4 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16, background: 'var(--bg)', color: 'var(--text)', minHeight: '100%', padding: 4 }}>
 
       <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
-        <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
           {Object.entries(config).map(([id, p]) => (
             <button key={id} onClick={() => setActivePipeline(id)}
               style={{
@@ -138,6 +214,59 @@ export default function PipelineReviewView({ getToken }) {
             {owners.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
         </div>
+
+        {/* Sort + filter toolbar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>Sort by</span>
+          {SORT_OPTIONS.map(opt => (
+            <button key={opt.key} onClick={() => {
+              if (sortField === opt.key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+              else { setSortField(opt.key); setSortDir('asc') }
+            }}
+              style={{
+                fontSize: 11.5, padding: '5px 10px', borderRadius: 8, cursor: 'pointer',
+                background: sortField === opt.key ? 'var(--accent)' : 'var(--bg-secondary)',
+                color: sortField === opt.key ? '#fff' : 'var(--text-secondary)',
+                border: '1px solid ' + (sortField === opt.key ? 'var(--accent)' : 'var(--border)'),
+              }}>
+              {opt.label}{sortField === opt.key && (sortDir === 'asc' ? ' ↑' : ' ↓')}
+            </button>
+          ))}
+          <button onClick={() => setFiltersOpen(o => !o)}
+            style={{ marginLeft: 'auto', fontSize: 11.5, padding: '5px 10px', borderRadius: 8, cursor: 'pointer', background: filtersActive ? 'var(--manager-color)' : 'var(--bg-secondary)', color: filtersActive ? '#fff' : 'var(--text-secondary)', border: '1px solid ' + (filtersActive ? 'var(--manager-color)' : 'var(--border)') }}>
+            Filters{filtersActive ? ' •' : ''}
+          </button>
+        </div>
+
+        {filtersOpen && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 14, padding: 12, background: 'var(--bg-secondary)', borderRadius: 10 }}>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginBottom: 3 }}>Min amount</div>
+              <input type="number" value={minAmount} onChange={e => setMinAmount(e.target.value)} placeholder="$0" style={inputStyle} />
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginBottom: 3 }}>Max amount</div>
+              <input type="number" value={maxAmount} onChange={e => setMaxAmount(e.target.value)} placeholder="Any" style={inputStyle} />
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginBottom: 3 }}>Close after</div>
+              <input type="date" value={closeAfter} onChange={e => setCloseAfter(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginBottom: 3 }}>Close before</div>
+              <input type="date" value={closeBefore} onChange={e => setCloseBefore(e.target.value)} style={inputStyle} />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', paddingBottom: 6, cursor: 'pointer' }}>
+              <input type="checkbox" checked={staleOnly} onChange={e => setStaleOnly(e.target.checked)} />
+              No contact in 14+ days
+            </label>
+            {filtersActive && (
+              <button onClick={clearFilters} style={{ fontSize: 11.5, color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', paddingBottom: 6 }}>
+                Clear
+              </button>
+            )}
+          </div>
+        )}
 
         {error && (
           <div style={{ background: 'var(--red-light)', color: 'var(--red)', padding: '10px 14px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 16 }}>
@@ -164,22 +293,39 @@ export default function PipelineReviewView({ getToken }) {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       {stageDeals.map(deal => (
                         <div key={deal.id} onClick={() => setSelectedDealId(deal.id)} style={{
-                          padding: '12px 14px', borderRadius: 12, cursor: 'pointer',
+                          padding: '13px 15px', borderRadius: 12, cursor: 'pointer',
                           border: selectedDealId === deal.id ? '1px solid var(--accent)' : '1px solid var(--border)',
                           background: selectedDealId === deal.id ? 'var(--bg-hover)' : 'var(--bg-secondary)',
                         }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-                            <div style={{ fontSize: 13, fontWeight: 500 }}>{deal.name}</div>
-                            {formatAmount(deal.amount) && (
-                              <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{formatAmount(deal.amount)}</div>
-                            )}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
+                            <div style={{ fontSize: 13.5, fontWeight: 500 }}>{deal.name}</div>
+                            <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                              {deal.companyName || 'No company'} · {deal.ownerName || 'Unassigned'}
+                            </div>
                           </div>
-                          <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginTop: 3 }}>
-                            {deal.companyName || 'No company'} · {deal.ownerName || 'Unassigned'}
-                            {daysAgo(deal.lastModified) != null && ` · updated ${daysAgo(deal.lastModified)}d ago`}
+
+                          {/* Prominent stat row — this is the "easier to call out" part */}
+                          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                            <div>
+                              <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.3px' }}>Deal size</div>
+                              <div style={{ fontSize: 14, fontWeight: 600 }}>{formatAmount(deal.amount) || '—'}</div>
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.3px' }}>Close date</div>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: closeDateColor(deal.closeDate) }}>
+                                {formatDate(deal.closeDate) || '—'}
+                              </div>
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.3px' }}>Last contact</div>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: lastContactColor(deal.lastContact) }}>
+                                {daysAgo(deal.lastContact) != null ? `${daysAgo(deal.lastContact)}d ago` : 'No activity logged'}
+                              </div>
+                            </div>
                           </div>
+
                           {deal.nextStep && (
-                            <div style={{ fontSize: 11.5, color: 'var(--accent-text)', marginTop: 5 }}>
+                            <div style={{ fontSize: 12, color: 'var(--accent-text)', marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
                               Next: {deal.nextStep}
                             </div>
                           )}
@@ -190,8 +336,10 @@ export default function PipelineReviewView({ getToken }) {
                 </div>
               )
             })}
-            {deals.length === 0 && (
-              <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>No open deals in this pipeline{ownerFilter ? ' for this person' : ''}.</div>
+            {sortedDeals.length === 0 && (
+              <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>
+                No deals match{filtersActive ? ' the current filters' : ` in this pipeline${ownerFilter ? ' for this person' : ''}`}.
+              </div>
             )}
           </div>
         )}
@@ -206,7 +354,24 @@ export default function PipelineReviewView({ getToken }) {
               {selectedDeal.companyName || 'No company'} · {selectedDeal.ownerName || 'Unassigned'}
             </div>
 
-            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+            <div style={{ display: 'flex', gap: 16, marginBottom: 16, borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', padding: '12px 0' }}>
+              <div>
+                <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase' }}>Size</div>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>{formatAmount(selectedDeal.amount) || '—'}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase' }}>Close</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: closeDateColor(selectedDeal.closeDate) }}>{formatDate(selectedDeal.closeDate) || '—'}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase' }}>Last contact</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: lastContactColor(selectedDeal.lastContact) }}>
+                  {daysAgo(selectedDeal.lastContact) != null ? `${daysAgo(selectedDeal.lastContact)}d ago` : '—'}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4 }}>
               Next step
             </div>
             <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, marginBottom: 16 }}>
