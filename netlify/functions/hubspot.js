@@ -1619,6 +1619,8 @@ export async function computeRightNowQueue(userId, qp = {}) {
     // in meeting-handling has broken the entire Right Now Queue twice now,
     // and it should never have been able to do that in the first place.
     let myMeetings = [];
+    let signals = [];
+    let outlookSignals = [];
     try {
       const meetingWindowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
       const meetingWindowEnd   = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
@@ -1683,7 +1685,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
       }
 
       // ── Build signals in the exact shape rightNowQueue.js expects ────────
-      const signals = rawEvents
+      signals = rawEvents
         .map(ev => {
           const contactId = ev.contactId ? String(ev.contactId) : null;
           const contact = contactId ? (contactMap[contactId] || null) : null;
@@ -1736,7 +1738,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
       // cached by outlook-emails.js) and flags anyone where the most recent
       // Outlook send is newer than any reply HubSpot knows about — i.e., a
       // real follow-up gap this app would otherwise miss entirely.
-      let outlookSignals = [];
+      outlookSignals = [];
       try {
         const outlookRes = await fetch(`${process.env.APP_URL}/api/outlook-emails?userId=${userId}&days=14`);
         if (outlookRes.ok) {
