@@ -140,6 +140,12 @@ export default function RightNowView({ getToken, user }) {
   const [contactDetail, setContactDetail] = useState(null) // { contact, engagements } from GET /contacts/:id, fetched on select
   const [contactDetailLoading, setContactDetailLoading] = useState(false)
 
+  // Team viewing — read-only look at a teammate's queue. Only shows up if
+  // GET /team succeeds (i.e. this user has a TEAM_HIERARCHY entry granting
+  // them scoped access to specific teammates, or full access to everyone).
+  const [teamRoster, setTeamRoster] = useState([]) // [{userId, email}] this user can view
+  const [viewingUserId, setViewingUserId] = useState(null) // null = viewing own queue
+
   const showToast = useCallback((msg) => {
     setToast(msg)
     setTimeout(() => setToast(t => (t === msg ? null : t)), 2500)
@@ -148,6 +154,19 @@ export default function RightNowView({ getToken, user }) {
   const load = useCallback(async () => {
     try {
       setError(null)
+      if (viewingUserId) {
+        // Read-only teammate view — team/queue only returns the raw queue,
+        // no top5/pins/discussed/focus state (those are per-viewer concepts
+        // that don't apply when just looking at someone else's list).
+        const queueRes = await apiFetch(`/api/hubspot/team/queue?userId=${encodeURIComponent(viewingUserId)}`, getToken)
+        setQueue(queueRes.queue || [])
+        setTop5Picks([])
+        setPinnedIds(new Set())
+        setPersistedDismissed([])
+        setCompletedTodos([])
+        if ((queueRes.queue || []).length > 0) setSelectedId(queueRes.queue[0].id)
+        return
+      }
       const [queueRes, top5Res, pinRes, dismissedRes, todoRes] = await Promise.all([
         apiFetch('/api/hubspot/right-now', getToken),
         apiFetch('/api/hubspot/top5', getToken).catch(() => ({ picks: [] })),
@@ -168,13 +187,22 @@ export default function RightNowView({ getToken, user }) {
     } finally {
       setLoading(false)
     }
-  }, [getToken, selectedId])
+  }, [getToken, selectedId, viewingUserId])
+
+  // Fetch the team roster once on mount — if this 403s, the user simply
+  // has no TEAM_HIERARCHY access, and the switcher just doesn't render.
+  useEffect(() => {
+    apiFetch('/api/hubspot/team', getToken)
+      .then(data => setTeamRoster(data.roster || []))
+      .catch(() => setTeamRoster([]))
+  }, [getToken])
 
   useEffect(() => {
+    setLoading(true)
     load()
     const interval = setInterval(load, 3 * 60 * 1000)
     return () => clearInterval(interval)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [viewingUserId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const visibleQueue = useMemo(
     () => queue.filter(item => !dismissedIds.has(item.id)),
@@ -313,6 +341,26 @@ export default function RightNowView({ getToken, user }) {
     if (!text) return
     setAdding(true)
     try {
+      if (viewingUserId) {
+        // Explicitly the one write allowed in read-only team-viewing mode.
+        const { item } = await apiFetch('/api/hubspot/team/push', getToken, {
+          method: 'POST',
+          body: JSON.stringify({ targetUserId: viewingUserId, text }),
+        })
+        setAddText('')
+        setQueue(prev => [{
+          source: 'todo',
+          id: `todo-${item.id}`,
+          contactId: item.contactId || null,
+          contact: null,
+          label: item.text,
+          queueScore: 100,
+          whyTag: `From ${user?.user_metadata?.full_name || user?.email || 'you'}`,
+          raw: item,
+        }, ...prev])
+        showToast('Task added to their queue')
+        return
+      }
       const { item } = await apiFetch('/api/hubspot/todo', getToken, {
         method: 'POST',
         body: JSON.stringify({ text, autoDetected: false, priority: 'HIGH' }),
@@ -430,9 +478,31 @@ export default function RightNowView({ getToken, user }) {
 
       <div style={{ padding: '22px 26px', background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
-        <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginBottom: 14 }}>
-          Viewing <strong style={{ color: 'var(--text-secondary)' }}>{user?.user_metadata?.full_name || user?.email || 'your'}</strong>'s Right Now Queue
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          {teamRoster.length > 0 ? (
+            <>
+              <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>Viewing</span>
+              <select value={viewingUserId || ''} onChange={e => { setSelectedId(null); setViewingUserId(e.target.value || null) }}
+                style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-secondary)', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '5px 10px' }}>
+                <option value="">{user?.user_metadata?.full_name || user?.email || 'You'} (me)</option>
+                {teamRoster.filter(r => r.userId).map(r => (
+                  <option key={r.userId} value={r.userId}>{r.email}</option>
+                ))}
+              </select>
+              <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>'s Right Now Queue</span>
+            </>
+          ) : (
+            <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+              Viewing <strong style={{ color: 'var(--text-secondary)' }}>{user?.user_metadata?.full_name || user?.email || 'your'}</strong>'s Right Now Queue
+            </span>
+          )}
         </div>
+
+        {viewingUserId && (
+          <div style={{ fontSize: 11.5, background: 'var(--manager-color)', color: '#fff', padding: '7px 12px', borderRadius: 8, marginBottom: 14, display: 'inline-block' }}>
+            Read-only — you can add tasks to their queue below, but can't pin, dismiss, or mark items complete on their behalf.
+          </div>
+        )}
 
         {error && (
           <div style={{ background: 'var(--red-light)', color: 'var(--red)', padding: '10px 14px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 16 }}>
@@ -544,12 +614,15 @@ export default function RightNowView({ getToken, user }) {
                             <span style={{ color: 'var(--text-tertiary)' }}>Why: </span>{item.rationale || item.whyTag}
                           </div>
                         </div>
-                        <button onClick={(e) => { e.stopPropagation(); togglePin(item.id, name) }}
+                        <button onClick={(e) => { e.stopPropagation(); if (!viewingUserId) togglePin(item.id, name) }}
+                          disabled={!!viewingUserId}
+                          title={viewingUserId ? 'Read-only — viewing a teammate\'s queue' : undefined}
                           style={{
-                            flexShrink: 0, fontSize: 11, padding: '5px 10px', borderRadius: 8, cursor: 'pointer',
+                            flexShrink: 0, fontSize: 11, padding: '5px 10px', borderRadius: 8, cursor: viewingUserId ? 'not-allowed' : 'pointer',
                             background: item.isPinned ? color : 'none',
                             color: item.isPinned ? 'var(--bg)' : 'var(--text-tertiary)',
                             border: item.isPinned ? 'none' : '1px solid var(--border-strong)',
+                            opacity: viewingUserId ? 0.4 : 1,
                           }}>
                           {item.isPinned ? 'Remove pin' : 'Pin here'}
                         </button>
@@ -596,9 +669,10 @@ export default function RightNowView({ getToken, user }) {
                     outline: selectedId === item.id ? '2px solid var(--accent)' : 'none',
                     outlineOffset: 1,
                   }}>
-                    <button onClick={e => { e.stopPropagation(); markDone(item) }}
-                      title={item.source === 'todo' ? 'Mark complete' : 'Dismiss from this session'}
-                      style={{ width: 17, height: 17, borderRadius: 6, border: '1.5px solid var(--border-strong)', background: 'var(--bg)', cursor: 'pointer', flexShrink: 0 }} />
+                    <button onClick={e => { e.stopPropagation(); if (!viewingUserId) markDone(item) }}
+                      title={viewingUserId ? 'Read-only — viewing a teammate\'s queue' : (item.source === 'todo' ? 'Mark complete' : 'Dismiss from this session')}
+                      disabled={!!viewingUserId}
+                      style={{ width: 17, height: 17, borderRadius: 6, border: '1.5px solid var(--border-strong)', background: 'var(--bg)', cursor: viewingUserId ? 'not-allowed' : 'pointer', opacity: viewingUserId ? 0.4 : 1, flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={item} /></div>
                         <RepInfoLine item={item} />
