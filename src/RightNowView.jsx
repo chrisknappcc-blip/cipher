@@ -423,11 +423,11 @@ export default function RightNowView({ getToken }) {
 
         <div style={{ display: 'flex', gap: 4, marginBottom: 18, borderBottom: '1px solid var(--border)' }}>
           <button onClick={() => setView('queue')}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '8px 4px', marginRight: 16, fontSize: 13, fontWeight: view === 'queue' ? 600 : 400, color: view === 'queue' ? 'var(--text)' : 'var(--text-tertiary)', borderBottom: view === 'queue' ? '2px solid var(--urgency-hot)' : '2px solid transparent' }}>
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '8px 4px', marginRight: 16, fontSize: 13, fontWeight: view === 'queue' ? 600 : 400, color: view === 'queue' ? 'var(--text)' : 'var(--text-tertiary)', borderBottom: view === 'queue' ? '2px solid var(--accent)' : '2px solid transparent' }}>
             Queue
           </button>
           <button onClick={() => setView('done')}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '8px 4px', fontSize: 13, fontWeight: view === 'done' ? 600 : 400, color: view === 'done' ? 'var(--text)' : 'var(--text-tertiary)', borderBottom: view === 'done' ? '2px solid var(--urgency-hot)' : '2px solid transparent', display: 'flex', alignItems: 'center', gap: 6 }}>
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '8px 4px', fontSize: 13, fontWeight: view === 'done' ? 600 : 400, color: view === 'done' ? 'var(--text)' : 'var(--text-tertiary)', borderBottom: view === 'done' ? '2px solid var(--accent)' : '2px solid transparent', display: 'flex', alignItems: 'center', gap: 6 }}>
             Completed Items
             {completedItems.length > 0 && (
               <span style={{ fontSize: 10, background: 'var(--bg-secondary)', color: 'var(--text-tertiary)', borderRadius: 10, padding: '1px 6px' }}>{completedItems.length}</span>
@@ -493,7 +493,7 @@ export default function RightNowView({ getToken }) {
             {top5Combined.length > 0 && (
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                  <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px', color: 'var(--urgency-hot)' }}>TOP 5 RIGHT NOW</span>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px', color: 'var(--accent)' }}>TOP 5 RIGHT NOW</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 22 }}>
                   {top5Combined.map((item, idx) => {
@@ -570,7 +570,7 @@ export default function RightNowView({ getToken }) {
                     borderRadius: 14, border: `1px solid color-mix(in srgb, ${color} 40%, var(--border))`,
                     background: `color-mix(in srgb, ${color} 8%, var(--bg-panel))`,
                     boxShadow: 'var(--shadow-soft)',
-                    outline: selectedId === item.id ? '2px solid var(--urgency-hot)' : 'none',
+                    outline: selectedId === item.id ? '2px solid var(--accent)' : 'none',
                     outlineOffset: 1,
                   }}>
                     <button onClick={e => { e.stopPropagation(); markDone(item) }}

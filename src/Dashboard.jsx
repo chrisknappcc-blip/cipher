@@ -2318,7 +2318,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
   ]
 
   const NavIcon = ({ name, active }) => {
-    const color = active ? 'var(--urgency-hot)' : 'var(--text-secondary)'
+    const color = active ? 'var(--accent)' : 'var(--text-secondary)'
     const common = { width:20, height:20, viewBox:'0 0 24 24', fill:'none', stroke:color, strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round' }
     if (name === 'bolt')  return <svg {...common}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
     if (name === 'star')  return <svg {...common}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
@@ -2401,7 +2401,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
             <button key={tab.key} onClick={() => { setActiveTab(tab.key); if (tab.key === 'dashboard') setNewSignalCount(0) }}
               style={{ background:'none', border:'none', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:4, opacity: activeTab===tab.key ? 1 : 0.55, position:'relative' }}>
               <NavIcon name={tab.icon} active={activeTab===tab.key} />
-              <span style={{ fontSize:9, textAlign:'center', lineHeight:1.3, color: activeTab===tab.key ? 'var(--urgency-hot)' : 'var(--text-tertiary)' }}>{tab.label}</span>
+              <span style={{ fontSize:9, textAlign:'center', lineHeight:1.3, color: activeTab===tab.key ? 'var(--accent)' : 'var(--text-tertiary)' }}>{tab.label}</span>
               {tab.key === 'dashboard' && newSignalCount > 0 && (
                 <span style={{ position:'absolute', top:-2, right:6, fontSize:9, fontWeight:600, background:'var(--red)', color:'#fff', borderRadius:10, padding:'0px 5px', minWidth:14, textAlign:'center' }}>
                   {newSignalCount}
