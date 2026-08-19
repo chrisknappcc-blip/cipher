@@ -433,6 +433,9 @@ export default function PipelineReviewView({ getToken }) {
                               <div style={{ fontSize: 14, fontWeight: 600, color: lastContactColor(deal.lastContact) }}>
                                 {daysAgo(deal.lastContact) != null ? `${daysAgo(deal.lastContact)}d ago` : 'No activity logged'}
                               </div>
+                              {deal.lastContactSource === 'company' && (
+                                <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginTop: 1 }}>via company, not tagged to deal</div>
+                              )}
                             </div>
                           </div>
 
@@ -481,6 +484,9 @@ export default function PipelineReviewView({ getToken }) {
                 <div style={{ fontSize: 15, fontWeight: 600, color: lastContactColor(selectedDeal.lastContact) }}>
                   {daysAgo(selectedDeal.lastContact) != null ? `${daysAgo(selectedDeal.lastContact)}d ago` : '—'}
                 </div>
+                {selectedDeal.lastContactSource === 'company' && (
+                  <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginTop: 1 }}>via company record</div>
+                )}
               </div>
             </div>
 
