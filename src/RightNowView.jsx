@@ -500,11 +500,13 @@ export default function RightNowView({ getToken }) {
                     const color = item.isPinned ? 'var(--pin-color)' : urgencyColor(item.queueScore)
                     const name = displayName(item)
                     return (
-                      <div key={item.id} style={{
-                        borderRadius: 14, padding: '13px 16px', display: 'flex', gap: 11, alignItems: 'flex-start',
+                      <div key={item.id} onClick={() => setSelectedId(item.id)} style={{
+                        borderRadius: 14, padding: '13px 16px', display: 'flex', gap: 11, alignItems: 'flex-start', cursor: 'pointer',
                         background: `color-mix(in srgb, ${color} 10%, var(--bg-panel))`,
                         border: `1px solid color-mix(in srgb, ${color} 40%, var(--border))`,
                         boxShadow: 'var(--shadow-soft)',
+                        outline: selectedId === item.id ? '2px solid var(--accent)' : 'none',
+                        outlineOffset: 1,
                       }}>
                         {item.isPinned ? (
                           <div style={{ width: 20, height: 20, borderRadius: '50%', background: color, color: 'var(--bg)', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -521,7 +523,7 @@ export default function RightNowView({ getToken }) {
                             <span style={{ color: 'var(--text-tertiary)' }}>Why: </span>{item.rationale || item.whyTag}
                           </div>
                         </div>
-                        <button onClick={() => togglePin(item.id, name)}
+                        <button onClick={(e) => { e.stopPropagation(); togglePin(item.id, name) }}
                           style={{
                             flexShrink: 0, fontSize: 11, padding: '5px 10px', borderRadius: 8, cursor: 'pointer',
                             background: item.isPinned ? color : 'none',
@@ -632,9 +634,9 @@ export default function RightNowView({ getToken }) {
                 ) : displayCompany(selectedItem)}
               </div>
             )}
-            {selectedItem.contact?.lastSequenceName && (
+            {contactDetail?.lastSequenceName && (
               <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginBottom: 14 }}>
-                Last sequence: {selectedItem.contact.lastSequenceName}
+                Last sequence: {contactDetail.lastSequenceName}
               </div>
             )}
 
