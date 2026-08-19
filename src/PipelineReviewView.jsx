@@ -17,7 +17,7 @@
 // hs_lastmodifieddate, since the latter just means "some field changed,"
 // not "someone actually engaged with this deal."
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { apiFetch } from './api'
 
 function formatAmount(amount) {
@@ -88,17 +88,34 @@ export default function PipelineReviewView({ getToken }) {
   const [closeAfter, setCloseAfter] = useState('')
   const [staleOnly, setStaleOnly] = useState(false)
 
+  // Live meeting features: presentation mode hides prep clutter, auto-refresh
+  // keeps data current while the meeting runs, discussed tracking persists
+  // so a mid-meeting reload doesn't lose progress.
+  const [presentationMode, setPresentationMode] = useState(false)
+  const [lastRefreshed, setLastRefreshed] = useState(null)
+  const [refreshTick, setRefreshTick] = useState(0) // re-render every 10s so the "updated Xs ago" label stays current
+  const [discussedIds, setDiscussedIds] = useState(new Set())
+
   useEffect(() => {
     Promise.all([
       apiFetch('/api/hubspot/pipeline-review/config', getToken),
       apiFetch('/api/hubspot/owners', getToken).catch(() => ({ owners: [] })),
-    ]).then(([configRes, ownersRes]) => {
+      apiFetch('/api/hubspot/pipeline-review/discussed', getToken).catch(() => ({ dealIds: [] })),
+    ]).then(([configRes, ownersRes, discussedRes]) => {
       setConfig(configRes.pipelines)
       setOwners(ownersRes.owners || [])
+      setDiscussedIds(new Set(discussedRes.dealIds || []))
       const firstPipelineId = Object.keys(configRes.pipelines || {})[0]
       setActivePipeline(firstPipelineId)
     }).catch(e => setError(e.message))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Purely a 10s tick to keep the "updated Xs ago" label live — doesn't
+  // refetch anything, just forces a re-render of the timestamp display.
+  useEffect(() => {
+    const interval = setInterval(() => setRefreshTick(t => t + 1), 10 * 1000)
+    return () => clearInterval(interval)
+  }, [])
 
   const loadDeals = useCallback(async () => {
     if (!activePipeline) return
@@ -110,6 +127,7 @@ export default function PipelineReviewView({ getToken }) {
       const data = await apiFetch(`/api/hubspot/pipeline-review?${qs}`, getToken)
       setDeals(data.deals || [])
       setStages(data.stages || [])
+      setLastRefreshed(Date.now())
     } catch (e) {
       setError(e.message)
     } finally {
@@ -118,6 +136,19 @@ export default function PipelineReviewView({ getToken }) {
   }, [activePipeline, ownerFilter, getToken])
 
   useEffect(() => { loadDeals() }, [loadDeals])
+
+  // Ref so the auto-refresh interval below always calls the CURRENT
+  // loadDeals (which changes identity when pipeline/owner filter change)
+  // instead of closing over a stale version from when the interval started.
+  const loadDealsRef = useRef(loadDeals)
+  useEffect(() => { loadDealsRef.current = loadDeals }, [loadDeals])
+
+  // Auto-refresh every 90s while this tab is open, so data stays current
+  // during the live meeting without anyone needing to remember to refresh.
+  useEffect(() => {
+    const interval = setInterval(() => loadDealsRef.current(), 90 * 1000)
+    return () => clearInterval(interval)
+  }, [])
 
   const filteredDeals = useMemo(() => {
     return deals.filter(d => {
@@ -180,6 +211,47 @@ export default function PipelineReviewView({ getToken }) {
   }
   const filtersActive = minAmount || maxAmount || closeBefore || closeAfter || staleOnly
 
+  const toggleDiscussed = async (dealId, e) => {
+    e.stopPropagation()
+    const nowDiscussed = !discussedIds.has(dealId)
+    setDiscussedIds(prev => {
+      const next = new Set(prev)
+      nowDiscussed ? next.add(dealId) : next.delete(dealId)
+      return next
+    })
+    try {
+      await apiFetch('/api/hubspot/pipeline-review/discussed', getToken, {
+        method: 'POST',
+        body: JSON.stringify({ dealId, discussed: nowDiscussed }),
+      })
+    } catch {
+      // Revert on failure
+      setDiscussedIds(prev => {
+        const next = new Set(prev)
+        nowDiscussed ? next.delete(dealId) : next.add(dealId)
+        return next
+      })
+    }
+  }
+
+  const resetMeeting = async () => {
+    if (!window.confirm('Clear all "discussed" checkmarks to start a fresh meeting?')) return
+    setDiscussedIds(new Set())
+    try {
+      await apiFetch('/api/hubspot/pipeline-review/discussed/reset', getToken, { method: 'POST' })
+    } catch (e) {
+      setError(`Couldn't reset: ${e.message}`)
+    }
+  }
+
+  const refreshedLabel = useMemo(() => {
+    void refreshTick // dependency to force recompute on tick
+    if (!lastRefreshed) return null
+    const secs = Math.round((Date.now() - lastRefreshed) / 1000)
+    if (secs < 60) return `Updated ${secs}s ago`
+    return `Updated ${Math.round(secs / 60)}m ago`
+  }, [lastRefreshed, refreshTick])
+
   if (!config) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
@@ -195,7 +267,7 @@ export default function PipelineReviewView({ getToken }) {
 
       <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
-        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           {Object.entries(config).map(([id, p]) => (
             <button key={id} onClick={() => setActivePipeline(id)}
               style={{
@@ -213,8 +285,30 @@ export default function PipelineReviewView({ getToken }) {
             <option value="">Whole team</option>
             {owners.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
+
+          <button onClick={() => setPresentationMode(p => !p)}
+            style={{ fontSize: 12.5, padding: '8px 12px', borderRadius: 'var(--radius)', cursor: 'pointer', background: presentationMode ? 'var(--accent)' : 'var(--bg-secondary)', color: presentationMode ? '#fff' : 'var(--text-secondary)', border: '1px solid ' + (presentationMode ? 'var(--accent)' : 'var(--border)') }}>
+            {presentationMode ? '✓ Presenting' : 'Presentation mode'}
+          </button>
         </div>
 
+        {/* Live-meeting status row: freshness, manual refresh, discussed progress, reset */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+          {refreshedLabel && <span>{refreshedLabel}</span>}
+          <button onClick={loadDeals} disabled={loading}
+            style={{ color: 'var(--accent-text)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11.5, padding: 0 }}>
+            {loading ? 'Refreshing…' : 'Refresh now'}
+          </button>
+          <span style={{ marginLeft: 'auto' }}>
+            {deals.filter(d => discussedIds.has(d.id)).length} of {deals.length} discussed
+          </span>
+          <button onClick={resetMeeting} style={{ color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11.5, padding: 0, textDecoration: 'underline' }}>
+            New meeting
+          </button>
+        </div>
+
+        {!presentationMode && (
+        <>
         {/* Sort + filter toolbar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>Sort by</span>
@@ -267,6 +361,8 @@ export default function PipelineReviewView({ getToken }) {
             )}
           </div>
         )}
+        </>
+        )}
 
         {error && (
           <div style={{ background: 'var(--red-light)', color: 'var(--red)', padding: '10px 14px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 16 }}>
@@ -286,19 +382,35 @@ export default function PipelineReviewView({ getToken }) {
                 <div key={stage.id}>
                   <div onClick={() => toggleStage(stage.id)} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
                     <span style={{ fontSize: 13, fontWeight: 600 }}>{stage.label}</span>
-                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', borderRadius: 10, padding: '1px 8px' }}>{stageDeals.length}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', borderRadius: 10, padding: '1px 8px' }}>
+                      {stageDeals.filter(d => discussedIds.has(d.id)).length}/{stageDeals.length}
+                    </span>
                     <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginLeft: 'auto' }}>{isCollapsed ? 'Show' : 'Hide'}</span>
                   </div>
                   {!isCollapsed && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {stageDeals.map(deal => (
+                      {stageDeals.map(deal => {
+                        const isDiscussed = discussedIds.has(deal.id)
+                        return (
                         <div key={deal.id} onClick={() => setSelectedDealId(deal.id)} style={{
                           padding: '13px 15px', borderRadius: 12, cursor: 'pointer',
                           border: selectedDealId === deal.id ? '1px solid var(--accent)' : '1px solid var(--border)',
                           background: selectedDealId === deal.id ? 'var(--bg-hover)' : 'var(--bg-secondary)',
+                          opacity: isDiscussed ? 0.55 : 1,
                         }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
-                            <div style={{ fontSize: 13.5, fontWeight: 500 }}>{deal.name}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                              <button onClick={(e) => toggleDiscussed(deal.id, e)} title={isDiscussed ? 'Mark not discussed' : 'Mark discussed'}
+                                style={{
+                                  width: 18, height: 18, borderRadius: 6, flexShrink: 0, cursor: 'pointer',
+                                  border: '1.5px solid ' + (isDiscussed ? 'var(--accent)' : 'var(--border-strong)'),
+                                  background: isDiscussed ? 'var(--accent)' : 'var(--bg)',
+                                  color: '#fff', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                }}>
+                                {isDiscussed ? '✓' : ''}
+                              </button>
+                              <div style={{ fontSize: 13.5, fontWeight: 500, textDecoration: isDiscussed ? 'line-through' : 'none' }}>{deal.name}</div>
+                            </div>
                             <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
                               {deal.companyName || 'No company'} · {deal.ownerName || 'Unassigned'}
                             </div>
@@ -330,7 +442,8 @@ export default function PipelineReviewView({ getToken }) {
                             </div>
                           )}
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   )}
                 </div>
