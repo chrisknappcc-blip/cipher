@@ -233,7 +233,7 @@ export default function App() {
   const [needsReconnect, setNeedsReconnect] = useState(false)
   const [checkingConnection, setCheckingConnection] = useState(true)
   const [tokenDone,  setTokenDone]  = useState(false)
-  const [theme, setTheme] = useState(() => localStorage.getItem('cipher-theme') || 'dark')
+  const [theme, setTheme] = useState(() => localStorage.getItem('cipher-theme') || 'light')
   const [colorTheme, setColorTheme] = useState(() => localStorage.getItem('cipher-color-theme') || 'navy')
   const [fontSize, setFontSize] = useState(() => localStorage.getItem('cipher-font-size') || 'medium')
 

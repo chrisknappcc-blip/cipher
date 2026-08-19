@@ -40,7 +40,29 @@ function displayName(item) {
   return item.contact?.name || item.label || 'Untitled'
 }
 function displayCompany(item) {
-  return item.contact?.company || ''
+  return item.contact?.companyName || item.contact?.company || ''
+}
+
+function NameCompanyLine({ item }) {
+  const name = displayName(item)
+  const company = displayCompany(item)
+  const contact = item.contact
+  const linkStyle = { color: 'inherit', textDecoration: 'underline', textDecorationColor: 'var(--border-strong)' }
+  return (
+    <>
+      {contact?.contactUrl ? (
+        <a href={contact.contactUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={linkStyle}>{name}</a>
+      ) : name}
+      {company && (
+        <>
+          {' · '}
+          {contact?.companyUrl ? (
+            <a href={contact.companyUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={linkStyle}>{company}</a>
+          ) : company}
+        </>
+      )}
+    </>
+  )
 }
 
 function sourceLabel(source) {
@@ -459,7 +481,7 @@ export default function RightNowView({ getToken }) {
                     }}>
                       <span style={{ fontSize: 15 }}>📅</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500 }}>{displayName(item)}{displayCompany(item) ? ` · ${displayCompany(item)}` : ''}</div>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={item} /></div>
                         <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>{item.whyTag}</div>
                       </div>
                     </div>
@@ -494,7 +516,7 @@ export default function RightNowView({ getToken }) {
                           </div>
                         )}
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 500 }}>{name}{displayCompany(item) ? ` · ${displayCompany(item)}` : ''}</div>
+                          <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={item} /></div>
                           <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
                             <span style={{ color: 'var(--text-tertiary)' }}>Why: </span>{item.rationale || item.whyTag}
                           </div>
@@ -555,7 +577,7 @@ export default function RightNowView({ getToken }) {
                       title={item.source === 'todo' ? 'Mark complete' : 'Dismiss from this session'}
                       style={{ width: 17, height: 17, borderRadius: 6, border: '1.5px solid var(--border-strong)', background: 'var(--bg)', cursor: 'pointer', flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 500 }}>{name}{displayCompany(item) ? ` · ${displayCompany(item)}` : ''}</div>
+                      <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={item} /></div>
                       <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
                         <span style={{ color: 'var(--text-tertiary)' }}>{sourceLabel(item.source)} · </span>{item.whyTag || 'No reason recorded'}
                       </div>
@@ -594,9 +616,26 @@ export default function RightNowView({ getToken }) {
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 10 }}>Context</div>
         {selectedItem ? (
           <>
-            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>{displayName(selectedItem)}</div>
+            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>
+              {selectedItem.contact?.contactUrl ? (
+                <a href={selectedItem.contact.contactUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline', textDecorationColor: 'var(--border-strong)' }}>
+                  {displayName(selectedItem)}
+                </a>
+              ) : displayName(selectedItem)}
+            </div>
             {displayCompany(selectedItem) && (
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 14 }}>{displayCompany(selectedItem)}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 14 }}>
+                {selectedItem.contact?.companyUrl ? (
+                  <a href={selectedItem.contact.companyUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline', textDecorationColor: 'var(--border-strong)' }}>
+                    {displayCompany(selectedItem)}
+                  </a>
+                ) : displayCompany(selectedItem)}
+              </div>
+            )}
+            {selectedItem.contact?.lastSequenceName && (
+              <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginBottom: 14 }}>
+                Last sequence: {selectedItem.contact.lastSequenceName}
+              </div>
             )}
 
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 12 }}>

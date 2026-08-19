@@ -267,6 +267,31 @@ export default function PipelineReviewView({ getToken }) {
     return () => { cancelled = true }
   }, [selectedDealId, getToken])
 
+  const containerRef = useRef(null)
+
+  // Real fullscreen, not just an internal style flag — fullscreening this
+  // component's own container hides everything outside it (the app's
+  // sidebar and header) automatically, since the browser only shows the
+  // fullscreened element and its children while active.
+  const togglePresentationMode = async () => {
+    if (!presentationMode) {
+      try { await containerRef.current?.requestFullscreen?.() } catch { /* fullscreen may be blocked, still apply the larger-view styling below */ }
+      setPresentationMode(true)
+    } else {
+      if (document.fullscreenElement) {
+        try { await document.exitFullscreen() } catch { /* ignore */ }
+      }
+      setPresentationMode(false)
+    }
+  }
+
+  // Keep state in sync if the user exits fullscreen via Esc instead of the button.
+  useEffect(() => {
+    const onFsChange = () => { if (!document.fullscreenElement) setPresentationMode(false) }
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [])
+
   const toggleStage = (stageId) => {
     setCollapsedStages(prev => {
       const next = new Set(prev)
@@ -363,7 +388,11 @@ export default function PipelineReviewView({ getToken }) {
   const inputStyle = { background: 'var(--bg-secondary)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12, padding: '6px 9px', width: 110 }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16, background: 'var(--bg)', color: 'var(--text)', minHeight: '100%', padding: 4 }}>
+    <div ref={containerRef} style={{
+      display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16,
+      background: 'var(--bg)', color: 'var(--text)', minHeight: '100%', padding: 4,
+      zoom: presentationMode ? 1.3 : 1,
+    }}>
 
       <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
@@ -434,9 +463,9 @@ export default function PipelineReviewView({ getToken }) {
             )}
           </div>
 
-          <button onClick={() => setPresentationMode(p => !p)}
+          <button onClick={togglePresentationMode}
             style={{ fontSize: 12.5, padding: '8px 12px', borderRadius: 'var(--radius)', cursor: 'pointer', background: presentationMode ? 'var(--accent)' : 'var(--bg-secondary)', color: presentationMode ? '#fff' : 'var(--text-secondary)', border: '1px solid ' + (presentationMode ? 'var(--accent)' : 'var(--border)') }}>
-            {presentationMode ? '✓ Presenting' : 'Presentation mode'}
+            {presentationMode ? '✓ Presenting (Esc to exit)' : 'Presentation mode'}
           </button>
         </div>
 
