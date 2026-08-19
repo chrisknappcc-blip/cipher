@@ -93,18 +93,31 @@ export default function PipelineReviewView({ getToken }) {
   // so a mid-meeting reload doesn't lose progress.
   const [presentationMode, setPresentationMode] = useState(false)
   const [lastRefreshed, setLastRefreshed] = useState(null)
-  const [refreshTick, setRefreshTick] = useState(0) // re-render every 10s so the "updated Xs ago" label stays current
+  const [refreshTick, setRefreshTick] = useState(0)
   const [discussedIds, setDiscussedIds] = useState(new Set())
+
+  // Company filter — searches ALL THREE pipelines at once for one company,
+  // since a company's deals commonly span more than one pipeline.
+  const [companyFilter, setCompanyFilter] = useState('')
+  const [companyModeActive, setCompanyModeActive] = useState(false)
+
+  // Focus Deal — SHARED across everyone (not scoped to the current user),
+  // since someone curates this list before the meeting and everyone needs
+  // to see the same curated set.
+  const [focusIds, setFocusIds] = useState(new Set())
+  const [focusOnly, setFocusOnly] = useState(false)
 
   useEffect(() => {
     Promise.all([
       apiFetch('/api/hubspot/pipeline-review/config', getToken),
       apiFetch('/api/hubspot/owners', getToken).catch(() => ({ owners: [] })),
       apiFetch('/api/hubspot/pipeline-review/discussed', getToken).catch(() => ({ dealIds: [] })),
-    ]).then(([configRes, ownersRes, discussedRes]) => {
+      apiFetch('/api/hubspot/pipeline-review/focus', getToken).catch(() => ({ dealIds: [] })),
+    ]).then(([configRes, ownersRes, discussedRes, focusRes]) => {
       setConfig(configRes.pipelines)
       setOwners(ownersRes.owners || [])
       setDiscussedIds(new Set(discussedRes.dealIds || []))
+      setFocusIds(new Set(focusRes.dealIds || []))
       const firstPipelineId = Object.keys(configRes.pipelines || {})[0]
       setActivePipeline(firstPipelineId)
     }).catch(e => setError(e.message))
@@ -118,6 +131,23 @@ export default function PipelineReviewView({ getToken }) {
   }, [])
 
   const loadDeals = useCallback(async () => {
+    if (companyModeActive) {
+      if (!companyFilter.trim()) return
+      setLoading(true)
+      setError(null)
+      try {
+        const qs = new URLSearchParams({ company: companyFilter.trim() })
+        const data = await apiFetch(`/api/hubspot/pipeline-review?${qs}`, getToken)
+        setDeals(data.deals || [])
+        setStages([])
+        setLastRefreshed(Date.now())
+      } catch (e) {
+        setError(e.message)
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
     if (!activePipeline) return
     setLoading(true)
     setError(null)
@@ -133,7 +163,7 @@ export default function PipelineReviewView({ getToken }) {
     } finally {
       setLoading(false)
     }
-  }, [activePipeline, ownerFilter, getToken])
+  }, [activePipeline, ownerFilter, companyModeActive, companyFilter, getToken])
 
   useEffect(() => { loadDeals() }, [loadDeals])
 
@@ -157,9 +187,10 @@ export default function PipelineReviewView({ getToken }) {
       if (closeBefore && (!d.closeDate || new Date(d.closeDate) > new Date(closeBefore))) return false
       if (closeAfter && (!d.closeDate || new Date(d.closeDate) < new Date(closeAfter))) return false
       if (staleOnly && !(daysAgo(d.lastContact) > 14)) return false
+      if (focusOnly && !focusIds.has(d.id)) return false
       return true
     })
-  }, [deals, minAmount, maxAmount, closeBefore, closeAfter, staleOnly])
+  }, [deals, minAmount, maxAmount, closeBefore, closeAfter, staleOnly, focusOnly, focusIds])
 
   const sortedDeals = useMemo(() => {
     const sorted = [...filteredDeals]
@@ -176,14 +207,36 @@ export default function PipelineReviewView({ getToken }) {
     return sorted
   }, [filteredDeals, sortField, sortDir])
 
-  const dealsByStage = useMemo(() => {
-    const map = {}
-    for (const stage of stages) map[stage.id] = []
-    for (const deal of sortedDeals) {
-      if (map[deal.stageId]) map[deal.stageId].push(deal)
+  // Unified grouping for both modes. Pipeline mode groups by the fixed
+  // stage list for that one pipeline. Company mode has no single fixed
+  // stage list (deals can span all three pipelines), so it groups by
+  // pipeline first, then by that pipeline's own stage order.
+  const sections = useMemo(() => {
+    if (companyModeActive) {
+      if (!config) return []
+      const byPipeline = {}
+      for (const deal of sortedDeals) {
+        const pid = deal.pipelineId
+        if (!byPipeline[pid]) byPipeline[pid] = []
+        byPipeline[pid].push(deal)
+      }
+      const result = []
+      Object.keys(byPipeline).forEach(pid => {
+        const pLabel = config[pid]?.label || 'Unknown pipeline'
+        const stageOrder = config[pid]?.stages || []
+        stageOrder.forEach(stage => {
+          const stageDeals = byPipeline[pid].filter(d => d.stageId === stage.id)
+          if (stageDeals.length > 0) {
+            result.push({ key: `${pid}-${stage.id}`, label: `${pLabel} · ${stage.label}`, deals: stageDeals })
+          }
+        })
+      })
+      return result
     }
-    return map
-  }, [sortedDeals, stages])
+    return stages
+      .map(stage => ({ key: stage.id, label: stage.label, deals: sortedDeals.filter(d => d.stageId === stage.id) }))
+      .filter(s => s.deals.length > 0)
+  }, [companyModeActive, sortedDeals, config, stages])
 
   const selectedDeal = deals.find(d => d.id === selectedDealId) || null
 
@@ -244,6 +297,37 @@ export default function PipelineReviewView({ getToken }) {
     }
   }
 
+  const toggleFocus = async (dealId, e) => {
+    e.stopPropagation()
+    const nowFocused = !focusIds.has(dealId)
+    setFocusIds(prev => {
+      const next = new Set(prev)
+      nowFocused ? next.add(dealId) : next.delete(dealId)
+      return next
+    })
+    try {
+      await apiFetch('/api/hubspot/pipeline-review/focus', getToken, {
+        method: 'POST',
+        body: JSON.stringify({ dealId, focus: nowFocused }),
+      })
+    } catch {
+      setFocusIds(prev => {
+        const next = new Set(prev)
+        nowFocused ? next.delete(dealId) : next.add(dealId)
+        return next
+      })
+    }
+  }
+
+  const submitCompanySearch = () => {
+    if (!companyFilter.trim()) return
+    setCompanyModeActive(true)
+  }
+  const clearCompanySearch = () => {
+    setCompanyFilter('')
+    setCompanyModeActive(false)
+  }
+
   const refreshedLabel = useMemo(() => {
     void refreshTick // dependency to force recompute on tick
     if (!lastRefreshed) return null
@@ -269,28 +353,52 @@ export default function PipelineReviewView({ getToken }) {
 
         <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           {Object.entries(config).map(([id, p]) => (
-            <button key={id} onClick={() => setActivePipeline(id)}
+            <button key={id} onClick={() => { setCompanyModeActive(false); setActivePipeline(id) }}
+              disabled={companyModeActive}
               style={{
-                padding: '8px 14px', borderRadius: 'var(--radius)', fontSize: 12.5, cursor: 'pointer',
-                background: activePipeline === id ? 'var(--accent)' : 'var(--bg-secondary)',
-                color: activePipeline === id ? '#fff' : 'var(--text-secondary)',
-                border: '1px solid ' + (activePipeline === id ? 'var(--accent)' : 'var(--border)'),
+                padding: '8px 14px', borderRadius: 'var(--radius)', fontSize: 12.5, cursor: companyModeActive ? 'default' : 'pointer',
+                opacity: companyModeActive ? 0.4 : 1,
+                background: activePipeline === id && !companyModeActive ? 'var(--accent)' : 'var(--bg-secondary)',
+                color: activePipeline === id && !companyModeActive ? '#fff' : 'var(--text-secondary)',
+                border: '1px solid ' + (activePipeline === id && !companyModeActive ? 'var(--accent)' : 'var(--border)'),
               }}>
               {p.label}
             </button>
           ))}
 
-          <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value)}
-            style={{ marginLeft: 'auto', background: 'var(--bg-secondary)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12.5, padding: '8px 10px' }}>
+          <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value)} disabled={companyModeActive}
+            style={{ background: 'var(--bg-secondary)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12.5, padding: '8px 10px', opacity: companyModeActive ? 0.4 : 1 }}>
             <option value="">Whole team</option>
             {owners.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
+
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <input value={companyFilter} onChange={e => setCompanyFilter(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') submitCompanySearch() }}
+              placeholder="Filter by company, e.g. AdventHealth"
+              style={{ background: 'var(--bg-secondary)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12.5, padding: '8px 10px', width: 210 }} />
+            {companyModeActive ? (
+              <button onClick={clearCompanySearch} style={{ fontSize: 12.5, padding: '8px 12px', borderRadius: 'var(--radius)', cursor: 'pointer', background: 'var(--manager-color)', color: '#fff', border: 'none' }}>
+                Clear
+              </button>
+            ) : (
+              <button onClick={submitCompanySearch} style={{ fontSize: 12.5, padding: '8px 12px', borderRadius: 'var(--radius)', cursor: 'pointer', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
+                Search
+              </button>
+            )}
+          </div>
 
           <button onClick={() => setPresentationMode(p => !p)}
             style={{ fontSize: 12.5, padding: '8px 12px', borderRadius: 'var(--radius)', cursor: 'pointer', background: presentationMode ? 'var(--accent)' : 'var(--bg-secondary)', color: presentationMode ? '#fff' : 'var(--text-secondary)', border: '1px solid ' + (presentationMode ? 'var(--accent)' : 'var(--border)') }}>
             {presentationMode ? '✓ Presenting' : 'Presentation mode'}
           </button>
         </div>
+
+        {companyModeActive && (
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>
+            Showing all pipelines for "{companyFilter}" · {deals.length} deal{deals.length !== 1 ? 's' : ''}
+          </div>
+        )}
 
         {/* Live-meeting status row: freshness, manual refresh, discussed progress, reset */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
@@ -302,6 +410,10 @@ export default function PipelineReviewView({ getToken }) {
           <span style={{ marginLeft: 'auto' }}>
             {deals.filter(d => discussedIds.has(d.id)).length} of {deals.length} discussed
           </span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+            <input type="checkbox" checked={focusOnly} onChange={e => setFocusOnly(e.target.checked)} />
+            Focus deals only
+          </label>
           <button onClick={resetMeeting} style={{ color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11.5, padding: 0, textDecoration: 'underline' }}>
             New meeting
           </button>
@@ -374,27 +486,26 @@ export default function PipelineReviewView({ getToken }) {
           <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>Loading deals…</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {stages.map(stage => {
-              const stageDeals = dealsByStage[stage.id] || []
-              if (stageDeals.length === 0) return null
-              const isCollapsed = collapsedStages.has(stage.id)
+            {sections.map(section => {
+              const isCollapsed = collapsedStages.has(section.key)
               return (
-                <div key={stage.id}>
-                  <div onClick={() => toggleStage(stage.id)} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{stage.label}</span>
+                <div key={section.key}>
+                  <div onClick={() => toggleStage(section.key)} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{section.label}</span>
                     <span style={{ fontSize: 11, color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', borderRadius: 10, padding: '1px 8px' }}>
-                      {stageDeals.filter(d => discussedIds.has(d.id)).length}/{stageDeals.length}
+                      {section.deals.filter(d => discussedIds.has(d.id)).length}/{section.deals.length}
                     </span>
                     <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginLeft: 'auto' }}>{isCollapsed ? 'Show' : 'Hide'}</span>
                   </div>
                   {!isCollapsed && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {stageDeals.map(deal => {
+                      {section.deals.map(deal => {
                         const isDiscussed = discussedIds.has(deal.id)
+                        const isFocused = focusIds.has(deal.id)
                         return (
                         <div key={deal.id} onClick={() => setSelectedDealId(deal.id)} style={{
                           padding: '13px 15px', borderRadius: 12, cursor: 'pointer',
-                          border: selectedDealId === deal.id ? '1px solid var(--accent)' : '1px solid var(--border)',
+                          border: isFocused ? '1.5px solid var(--pin-color)' : (selectedDealId === deal.id ? '1px solid var(--accent)' : '1px solid var(--border)'),
                           background: selectedDealId === deal.id ? 'var(--bg-hover)' : 'var(--bg-secondary)',
                           opacity: isDiscussed ? 0.55 : 1,
                         }}>
@@ -409,10 +520,18 @@ export default function PipelineReviewView({ getToken }) {
                                 }}>
                                 {isDiscussed ? '✓' : ''}
                               </button>
+                              <button onClick={(e) => toggleFocus(deal.id, e)} title={isFocused ? 'Remove focus' : 'Mark as Focus Deal'}
+                                style={{
+                                  fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', flexShrink: 0,
+                                  color: isFocused ? 'var(--pin-color)' : 'var(--text-tertiary)', opacity: isFocused ? 1 : 0.4,
+                                }}>
+                                ★
+                              </button>
                               <div style={{ fontSize: 13.5, fontWeight: 500, textDecoration: isDiscussed ? 'line-through' : 'none' }}>{deal.name}</div>
                             </div>
                             <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
                               {deal.companyName || 'No company'} · {deal.ownerName || 'Unassigned'}
+                              {companyModeActive && deal.stageLabel && ` · ${deal.stageLabel}`}
                             </div>
                           </div>
 
@@ -433,15 +552,24 @@ export default function PipelineReviewView({ getToken }) {
                               <div style={{ fontSize: 14, fontWeight: 600, color: lastContactColor(deal.lastContact) }}>
                                 {daysAgo(deal.lastContact) != null ? `${daysAgo(deal.lastContact)}d ago` : 'No activity logged'}
                               </div>
-                              {deal.lastContactSource === 'company' && (
-                                <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginTop: 1 }}>via company, not tagged to deal</div>
+                              {deal.lastContactSource && deal.lastContactSource !== 'deal' && (
+                                <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginTop: 1 }}>via {deal.lastContactSource}, not tagged to deal</div>
                               )}
                             </div>
                           </div>
 
-                          {deal.nextStep && (
-                            <div style={{ fontSize: 12, color: 'var(--accent-text)', marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-                              Next: {deal.nextStep}
+                          {(deal.currentStatus || deal.nextStep) && (
+                            <div style={{ marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              {deal.currentStatus && (
+                                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                                  <strong style={{ color: 'var(--text)' }}>Status:</strong> {deal.currentStatus}
+                                </div>
+                              )}
+                              {deal.nextStep && (
+                                <div style={{ fontSize: 12, color: 'var(--accent-text)' }}>
+                                  <strong>Next:</strong> {deal.nextStep}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -452,9 +580,11 @@ export default function PipelineReviewView({ getToken }) {
                 </div>
               )
             })}
-            {sortedDeals.length === 0 && (
+            {sections.length === 0 && (
               <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>
-                No deals match{filtersActive ? ' the current filters' : ` in this pipeline${ownerFilter ? ' for this person' : ''}`}.
+                {companyModeActive
+                  ? `No open deals found for "${companyFilter}".`
+                  : `No deals match${filtersActive ? ' the current filters' : ` in this pipeline${ownerFilter ? ' for this person' : ''}`}.`}
               </div>
             )}
           </div>
@@ -484,10 +614,17 @@ export default function PipelineReviewView({ getToken }) {
                 <div style={{ fontSize: 15, fontWeight: 600, color: lastContactColor(selectedDeal.lastContact) }}>
                   {daysAgo(selectedDeal.lastContact) != null ? `${daysAgo(selectedDeal.lastContact)}d ago` : '—'}
                 </div>
-                {selectedDeal.lastContactSource === 'company' && (
-                  <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginTop: 1 }}>via company record</div>
+                {selectedDeal.lastContactSource && selectedDeal.lastContactSource !== 'deal' && (
+                  <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginTop: 1 }}>via {selectedDeal.lastContactSource} record</div>
                 )}
               </div>
+            </div>
+
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4 }}>
+              Current status
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, marginBottom: 16 }}>
+              {selectedDeal.currentStatus || <span style={{ color: 'var(--text-tertiary)' }}>Not recorded in HubSpot.</span>}
             </div>
 
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4 }}>
