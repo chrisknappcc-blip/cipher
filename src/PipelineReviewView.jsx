@@ -574,12 +574,21 @@ export default function PipelineReviewView({ getToken }) {
                                   background: isFocused ? 'var(--pin-color)' : 'var(--bg)',
                                   color: isFocused ? '#fff' : 'var(--text-secondary)',
                                 }}>
-                                <span>★</span> {isFocused ? 'Focus' : 'Focus?'}
+                                <span>★</span> Focus
                               </button>
-                              <div style={{ fontSize: 13.5, fontWeight: 500, textDecoration: isDiscussed ? 'line-through' : 'none' }}>{deal.name}</div>
+                              <a href={deal.hubspotDealUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                                style={{ fontSize: 13.5, fontWeight: 500, textDecoration: isDiscussed ? 'line-through' : 'none', color: 'var(--text)' }}>
+                                {deal.name}
+                              </a>
                             </div>
                             <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                              {deal.companyName || 'No company'} · {deal.ownerName || 'Unassigned'}
+                              {deal.hubspotCompanyUrl ? (
+                                <a href={deal.hubspotCompanyUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                                  style={{ color: 'var(--text-tertiary)' }}>
+                                  {deal.companyName || 'No company'}
+                                </a>
+                              ) : (deal.companyName || 'No company')}
+                              {' · '}{deal.ownerName || 'Unassigned'}
                               {companyModeActive && deal.stageLabel && ` · ${deal.stageLabel}`}
                             </div>
                           </div>
@@ -644,9 +653,17 @@ export default function PipelineReviewView({ getToken }) {
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 10 }}>Talking points</div>
         {selectedDeal ? (
           <>
-            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>{selectedDeal.name}</div>
+            <a href={selectedDeal.hubspotDealUrl} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 14, fontWeight: 500, marginBottom: 2, color: 'var(--text)', display: 'block' }}>
+              {selectedDeal.name}
+            </a>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 14 }}>
-              {selectedDeal.companyName || 'No company'} · {selectedDeal.ownerName || 'Unassigned'}
+              {selectedDeal.hubspotCompanyUrl ? (
+                <a href={selectedDeal.hubspotCompanyUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-secondary)' }}>
+                  {selectedDeal.companyName || 'No company'}
+                </a>
+              ) : (selectedDeal.companyName || 'No company')}
+              {' · '}{selectedDeal.ownerName || 'Unassigned'}
             </div>
 
             <div style={{ display: 'flex', gap: 16, marginBottom: 16, borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', padding: '12px 0' }}>
@@ -697,7 +714,7 @@ export default function PipelineReviewView({ getToken }) {
                     <div style={{ color: 'var(--text-tertiary)', fontSize: 10.5, textTransform: 'uppercase', marginBottom: 3 }}>
                       {e.type}{daysAgo(e.timestamp) != null && ` · ${daysAgo(e.timestamp)}d ago`}
                     </div>
-                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-line' }}>
                       {(e.body || e.subject || '').slice(0, 280)}
                     </div>
                   </div>
