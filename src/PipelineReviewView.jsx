@@ -107,6 +107,22 @@ export default function PipelineReviewView({ getToken }) {
   const [focusIds, setFocusIds] = useState(new Set())
   const [focusOnly, setFocusOnly] = useState(false)
 
+  // Hide pipelines that aren't relevant to this meeting (e.g. the early-
+  // funnel Opportunity pipeline) — a personal display preference, so it's
+  // stored locally rather than shared across everyone.
+  const [hiddenPipelines, setHiddenPipelines] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('cipher-pipeline-review-hidden') || '[]')) }
+    catch { return new Set() }
+  })
+  const togglePipelineHidden = (pipelineId) => {
+    setHiddenPipelines(prev => {
+      const next = new Set(prev)
+      next.has(pipelineId) ? next.delete(pipelineId) : next.add(pipelineId)
+      localStorage.setItem('cipher-pipeline-review-hidden', JSON.stringify([...next]))
+      return next
+    })
+  }
+
   useEffect(() => {
     Promise.all([
       apiFetch('/api/hubspot/pipeline-review/config', getToken),
@@ -118,7 +134,7 @@ export default function PipelineReviewView({ getToken }) {
       setOwners(ownersRes.owners || [])
       setDiscussedIds(new Set(discussedRes.dealIds || []))
       setFocusIds(new Set(focusRes.dealIds || []))
-      const firstPipelineId = Object.keys(configRes.pipelines || {})[0]
+      const firstPipelineId = Object.keys(configRes.pipelines || {}).find(id => !hiddenPipelines.has(id)) || Object.keys(configRes.pipelines || {})[0]
       setActivePipeline(firstPipelineId)
     }).catch(e => setError(e.message))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -221,7 +237,7 @@ export default function PipelineReviewView({ getToken }) {
         byPipeline[pid].push(deal)
       }
       const result = []
-      Object.keys(byPipeline).forEach(pid => {
+      Object.keys(byPipeline).filter(pid => !hiddenPipelines.has(pid)).forEach(pid => {
         const pLabel = config[pid]?.label || 'Unknown pipeline'
         const stageOrder = config[pid]?.stages || []
         stageOrder.forEach(stage => {
@@ -236,7 +252,7 @@ export default function PipelineReviewView({ getToken }) {
     return stages
       .map(stage => ({ key: stage.id, label: stage.label, deals: sortedDeals.filter(d => d.stageId === stage.id) }))
       .filter(s => s.deals.length > 0)
-  }, [companyModeActive, sortedDeals, config, stages])
+  }, [companyModeActive, sortedDeals, config, stages, hiddenPipelines])
 
   const selectedDeal = deals.find(d => d.id === selectedDealId) || null
 
@@ -351,21 +367,51 @@ export default function PipelineReviewView({ getToken }) {
 
       <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
-        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          {Object.entries(config).map(([id, p]) => (
-            <button key={id} onClick={() => { setCompanyModeActive(false); setActivePipeline(id) }}
-              disabled={companyModeActive}
-              style={{
-                padding: '8px 14px', borderRadius: 'var(--radius)', fontSize: 12.5, cursor: companyModeActive ? 'default' : 'pointer',
-                opacity: companyModeActive ? 0.4 : 1,
-                background: activePipeline === id && !companyModeActive ? 'var(--accent)' : 'var(--bg-secondary)',
-                color: activePipeline === id && !companyModeActive ? '#fff' : 'var(--text-secondary)',
-                border: '1px solid ' + (activePipeline === id && !companyModeActive ? 'var(--accent)' : 'var(--border)'),
-              }}>
-              {p.label}
-            </button>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {Object.entries(config).filter(([id]) => !hiddenPipelines.has(id)).map(([id, p]) => (
+            <div key={id} style={{ position: 'relative', display: 'flex' }}>
+              <button onClick={() => { setCompanyModeActive(false); setActivePipeline(id) }}
+                disabled={companyModeActive}
+                style={{
+                  padding: '8px 26px 8px 14px', borderRadius: 'var(--radius)', fontSize: 12.5, cursor: companyModeActive ? 'default' : 'pointer',
+                  opacity: companyModeActive ? 0.4 : 1,
+                  background: activePipeline === id && !companyModeActive ? 'var(--accent)' : 'var(--bg-secondary)',
+                  color: activePipeline === id && !companyModeActive ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid ' + (activePipeline === id && !companyModeActive ? 'var(--accent)' : 'var(--border)'),
+                }}>
+                {p.label}
+              </button>
+              {!companyModeActive && (
+                <button onClick={(e) => {
+                    e.stopPropagation()
+                    togglePipelineHidden(id)
+                    if (activePipeline === id) {
+                      const nextVisible = Object.keys(config).find(pid => pid !== id && !hiddenPipelines.has(pid))
+                      if (nextVisible) setActivePipeline(nextVisible)
+                    }
+                  }}
+                  title={`Hide ${p.label}`}
+                  style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: activePipeline === id ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)', padding: 2, lineHeight: 1 }}>
+                  ×
+                </button>
+              )}
+            </div>
           ))}
 
+          {hiddenPipelines.size > 0 && !companyModeActive && (
+            <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+              {hiddenPipelines.size} hidden ·{' '}
+              {[...hiddenPipelines].map(id => (
+                <button key={id} onClick={() => togglePipelineHidden(id)}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent-text)', cursor: 'pointer', fontSize: 11.5, textDecoration: 'underline', padding: '0 2px' }}>
+                  Show {config[id]?.label}
+                </button>
+              ))}
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value)} disabled={companyModeActive}
             style={{ background: 'var(--bg-secondary)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12.5, padding: '8px 10px', opacity: companyModeActive ? 0.4 : 1 }}>
             <option value="">Whole team</option>
@@ -522,10 +568,13 @@ export default function PipelineReviewView({ getToken }) {
                               </button>
                               <button onClick={(e) => toggleFocus(deal.id, e)} title={isFocused ? 'Remove focus' : 'Mark as Focus Deal'}
                                 style={{
-                                  fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', flexShrink: 0,
-                                  color: isFocused ? 'var(--pin-color)' : 'var(--text-tertiary)', opacity: isFocused ? 1 : 0.4,
+                                  display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5, fontWeight: 500, cursor: 'pointer', flexShrink: 0,
+                                  padding: '4px 9px', borderRadius: 8,
+                                  border: '1.5px solid ' + (isFocused ? 'var(--pin-color)' : 'var(--border-strong)'),
+                                  background: isFocused ? 'var(--pin-color)' : 'var(--bg)',
+                                  color: isFocused ? '#fff' : 'var(--text-secondary)',
                                 }}>
-                                ★
+                                <span>★</span> {isFocused ? 'Focus' : 'Focus?'}
                               </button>
                               <div style={{ fontSize: 13.5, fontWeight: 500, textDecoration: isDiscussed ? 'line-through' : 'none' }}>{deal.name}</div>
                             </div>
