@@ -6782,6 +6782,167 @@ export const handler = async (event, context) => {
     // pipeline at a time (matches walking the team through one pipeline,
     // then the next, in the actual meeting), whole team by default,
     // optionally narrowed to one owner.
+    // Shared enrichment: owner names, company data, and — critically for
+    // last-contact accuracy — associated CONTACT activity too, not just the
+    // deal and its company. A meeting or call is very often logged against
+    // a specific contact without ever being tagged to the deal, so checking
+    // only the deal (or even deal+company) still misses real activity.
+    async function enrichAndFormatDeals(userId, deals) {
+      const ownerIds = [...new Set(deals.map(d => d.properties?.hubspot_owner_id).filter(Boolean))];
+      const ownersById = {};
+      if (ownerIds.length > 0) {
+        const ownersData = await hsGet(userId, "/crm/v3/owners", { limit: 100 }).catch(() => ({ results: [] }));
+        (ownersData.results || []).forEach(o => {
+          ownersById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
+        });
+      }
+
+      const companyIds = deals.map(d => d.associations?.companies?.results?.[0]?.id).filter(Boolean);
+      const companiesById = {};
+      if (companyIds.length > 0) {
+        const companyData = await hsPost(userId, "/crm/v3/objects/companies/batch/read", {
+          inputs: [...new Set(companyIds)].slice(0, 100).map(id => ({ id })),
+          properties: ["name", "notes_last_updated"],
+        }).catch(() => ({ results: [] }));
+        (companyData.results || []).forEach(c => {
+          companiesById[c.id] = { name: c.properties?.name || null, lastContact: c.properties?.notes_last_updated || null };
+        });
+      }
+
+      // All associated contacts across all deals, chunked into batches of 100
+      // (HubSpot batch/read's practical cap).
+      const allContactIds = [...new Set(
+        deals.flatMap(d => (d.associations?.contacts?.results || []).map(c => c.id))
+      )];
+      const contactsById = {};
+      for (let i = 0; i < allContactIds.length; i += 100) {
+        const chunk = allContactIds.slice(i, i + 100);
+        const contactData = await hsPost(userId, "/crm/v3/objects/contacts/batch/read", {
+          inputs: chunk.map(id => ({ id })),
+          properties: ["notes_last_updated"],
+        }).catch(() => ({ results: [] }));
+        (contactData.results || []).forEach(c => {
+          contactsById[c.id] = c.properties?.notes_last_updated || null;
+        });
+      }
+
+      return deals.map(d => {
+        const companyId = d.associations?.companies?.results?.[0]?.id;
+        const company = companiesById[companyId] || {};
+        const contactIds = (d.associations?.contacts?.results || []).map(c => c.id);
+        const contactLastContacts = contactIds.map(id => contactsById[id]).filter(Boolean);
+
+        // Take the most recent across deal, company, AND all associated
+        // contacts — any one of these can hold the real "last touched"
+        // date depending on where whoever logged the activity happened to
+        // tag it, and HubSpot doesn't roll these up to each other.
+        const dealLastContact = d.properties?.notes_last_updated || null;
+        const companyLastContact = company.lastContact || null;
+        const candidates = [
+          { at: dealLastContact, source: "deal" },
+          { at: companyLastContact, source: "company" },
+          ...contactLastContacts.map(at => ({ at, source: "contact" })),
+        ].filter(c => c.at);
+        candidates.sort((a, b) => new Date(b.at) - new Date(a.at));
+        const winner = candidates[0] || { at: null, source: null };
+
+        const pipelineId = d.properties?.pipeline;
+        const stageId = d.properties?.dealstage;
+        const stageLabel = PIPELINE_STAGES[pipelineId]?.stages.find(s => s.id === stageId)?.label || null;
+
+        return {
+          id: d.id,
+          name: d.properties?.dealname || "Untitled deal",
+          pipelineId,
+          pipelineLabel: PIPELINE_STAGES[pipelineId]?.label || null,
+          stageId,
+          stageLabel,
+          amount: d.properties?.amount || null,
+          nextStep: d.properties?.hs_next_step || null,
+          currentStatus: d.properties?.current_status || null,
+          ownerId: d.properties?.hubspot_owner_id || null,
+          ownerName: ownersById[String(d.properties?.hubspot_owner_id)] || null,
+          companyName: company.name || null,
+          lastModified: d.properties?.hs_lastmodifieddate || null,
+          lastContact: winner.at,
+          lastContactSource: winner.source,
+          activityCount: d.properties?.num_notes ? Number(d.properties.num_notes) : 0,
+          closeDate: d.properties?.closedate || null,
+        };
+      });
+    }
+
+    const DEAL_SEARCH_PROPERTIES = ["dealname", "dealstage", "pipeline", "amount", "hs_next_step", "current_status", "hubspot_owner_id", "hs_lastmodifieddate", "closedate", "notes_last_updated", "num_notes"];
+
+    // GET /pipeline-review?company=X — search across ALL THREE pipelines at
+    // once for a specific company, since a company's deals can and do span
+    // more than one pipeline (new business + expansion, for instance).
+    if (method === "GET" && path === "/pipeline-review" && qp.company) {
+      try {
+        const companySearch = await hsPost(user.userId, "/crm/v3/objects/companies/search", {
+          filterGroups: [{ filters: [{ propertyName: "name", operator: "CONTAINS_TOKEN", value: qp.company }] }],
+          properties: ["name"],
+          limit: 20,
+        }).catch(() => ({ results: [] }));
+
+        const matchedCompanyIds = (companySearch.results || []).map(c => c.id);
+        if (matchedCompanyIds.length === 0) {
+          return ok({ companyQuery: qp.company, deals: [] });
+        }
+
+        // Get each matched company's associated deal IDs, then batch-read those deals.
+        const dealIdSets = await Promise.all(
+          matchedCompanyIds.map(id =>
+            hsGet(user.userId, `/crm/v4/objects/companies/${id}/associations/deals`, {}).catch(() => ({ results: [] }))
+          )
+        );
+        // Track which company each deal actually belongs to, since a search
+        // can match multiple companies (e.g. several "Loma Linda" records) —
+        // deals must not all get attributed to whichever company happened
+        // to be first in the list.
+        const dealToCompanyId = {};
+        matchedCompanyIds.forEach((companyId, idx) => {
+          (dealIdSets[idx]?.results || []).forEach(a => {
+            dealToCompanyId[a.toObjectId || a.id] = companyId;
+          });
+        });
+        const dealIds = Object.keys(dealToCompanyId);
+        if (dealIds.length === 0) {
+          return ok({ companyQuery: qp.company, deals: [] });
+        }
+
+        const dealBatch = await hsPost(user.userId, "/crm/v3/objects/deals/batch/read", {
+          inputs: dealIds.slice(0, 200).map(id => ({ id })),
+          properties: DEAL_SEARCH_PROPERTIES,
+        }).catch(() => ({ results: [] }));
+
+        // batch/read doesn't return associations — fetch those separately
+        // for the company (already known) and contacts (needed for accuracy).
+        const dealsWithAssoc = await Promise.all((dealBatch.results || []).map(async d => {
+          const contactsAssoc = await hsGet(user.userId, `/crm/v4/objects/deals/${d.id}/associations/contacts`, {}).catch(() => ({ results: [] }));
+          return {
+            ...d,
+            associations: {
+              companies: { results: [{ id: dealToCompanyId[d.id] || null }] },
+              contacts: { results: (contactsAssoc.results || []).map(r => ({ id: r.toObjectId || r.id })) },
+            },
+          };
+        }));
+
+        // Exclude closed deals across whichever pipeline each one belongs to.
+        const openDeals = dealsWithAssoc.filter(d => {
+          const pipelineId = d.properties?.pipeline;
+          const closedStages = PIPELINE_STAGES[pipelineId]?.closedStages || [];
+          return !closedStages.includes(d.properties?.dealstage);
+        });
+
+        const formatted = await enrichAndFormatDeals(user.userId, openDeals);
+        return ok({ companyQuery: qp.company, deals: formatted });
+      } catch (err) {
+        return error(500, `Pipeline review company search error: ${err.message}`);
+      }
+    }
+
     if (method === "GET" && path === "/pipeline-review") {
       try {
         const pipelineId = qp.pipeline;
@@ -6797,68 +6958,14 @@ export const handler = async (event, context) => {
 
         const dealsData = await hsPost(user.userId, "/crm/v3/objects/deals/search", {
           filterGroups: [{ filters }],
-          properties: ["dealname", "dealstage", "pipeline", "amount", "hs_next_step", "hubspot_owner_id", "hs_lastmodifieddate", "closedate", "notes_last_updated", "num_notes"],
-          associations: ["companies"],
+          properties: DEAL_SEARCH_PROPERTIES,
+          associations: ["companies", "contacts"],
           sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
           limit: 200,
         }).catch(() => ({ results: [] }));
 
         const deals = dealsData.results || [];
-
-        // Batch-resolve owner names and company names in two calls instead
-        // of N+1 — same pattern used elsewhere in this file.
-        const ownerIds = [...new Set(deals.map(d => d.properties?.hubspot_owner_id).filter(Boolean))];
-        const ownersById = {};
-        if (ownerIds.length > 0) {
-          const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 }).catch(() => ({ results: [] }));
-          (ownersData.results || []).forEach(o => {
-            ownersById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
-          });
-        }
-
-        const companyIds = deals.map(d => d.associations?.companies?.results?.[0]?.id).filter(Boolean);
-        const companiesById = {};
-        if (companyIds.length > 0) {
-          const companyData = await hsPost(user.userId, "/crm/v3/objects/companies/batch/read", {
-            inputs: [...new Set(companyIds)].slice(0, 100).map(id => ({ id })),
-            properties: ["name", "notes_last_updated"],
-          }).catch(() => ({ results: [] }));
-          (companyData.results || []).forEach(c => {
-            companiesById[c.id] = { name: c.properties?.name || null, lastContact: c.properties?.notes_last_updated || null };
-          });
-        }
-
-        const formatted = deals.map(d => {
-          const companyId = d.associations?.companies?.results?.[0]?.id;
-          const company = companiesById[companyId] || {};
-          // A deal's own notes_last_updated only reflects activity explicitly
-          // associated with the DEAL object — HubSpot does not roll up
-          // company/contact-level activity automatically. A meeting logged
-          // against the company (very common) can leave the deal looking
-          // stale even though real contact happened. Take whichever is more
-          // recent so this doesn't misrepresent actual engagement.
-          const dealLastContact = d.properties?.notes_last_updated || null;
-          const companyLastContact = company.lastContact || null;
-          const lastContact = [dealLastContact, companyLastContact]
-            .filter(Boolean)
-            .sort((a, b) => new Date(b) - new Date(a))[0] || null;
-
-          return {
-            id: d.id,
-            name: d.properties?.dealname || "Untitled deal",
-            stageId: d.properties?.dealstage,
-            amount: d.properties?.amount || null,
-            nextStep: d.properties?.hs_next_step || null,
-            ownerId: d.properties?.hubspot_owner_id || null,
-            ownerName: ownersById[String(d.properties?.hubspot_owner_id)] || null,
-            companyName: company.name || null,
-            lastModified: d.properties?.hs_lastmodifieddate || null,
-            lastContact,
-            lastContactSource: lastContact === companyLastContact && companyLastContact !== dealLastContact ? "company" : "deal",
-            activityCount: d.properties?.num_notes ? Number(d.properties.num_notes) : 0,
-            closeDate: d.properties?.closedate || null,
-          };
-        });
+        const formatted = await enrichAndFormatDeals(user.userId, deals);
 
         return ok({ pipeline: { id: pipelineId, label: config.label }, stages: config.stages, deals: formatted });
       } catch (err) {
@@ -6895,6 +7002,47 @@ export const handler = async (event, context) => {
     // a page reload mid-meeting doesn't lose progress, but explicitly reset
     // via the endpoint below rather than auto-expiring — a facilitator
     // should control when a new meeting cycle starts, not a timer guessing.
+    // GET/POST /pipeline-review/focus — "Focus Deal" flags. Deliberately
+    // SHARED across all users (no userId in the blob key), unlike
+    // "discussed" above which is per-presenter. Someone curates this list
+    // before the meeting and everyone needs to see the same curated set.
+    if (method === "GET" && path === "/pipeline-review/focus") {
+      try {
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ dealIds: [] });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pipeline-focus-deals.json${sas}`;
+        const res = await fetch(url);
+        if (!res.ok) return ok({ dealIds: [] });
+        const data = await res.json();
+        return ok({ dealIds: data.dealIds || [] });
+      } catch (err) {
+        return ok({ dealIds: [], error: err.message });
+      }
+    }
+
+    if (method === "POST" && path === "/pipeline-review/focus") {
+      try {
+        const body = JSON.parse(event.body || "{}");
+        if (!body.dealId) return error(400, "dealId is required");
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ dealIds: [] });
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pipeline-focus-deals.json${sas}`;
+        const res = await fetch(url);
+        const data = res.ok ? await res.json() : { dealIds: [] };
+        const current = new Set(data.dealIds || []);
+        body.focus ? current.add(body.dealId) : current.delete(body.dealId);
+        const updated = [...current];
+        await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+          body: JSON.stringify({ dealIds: updated }),
+        });
+        return ok({ dealIds: updated });
+      } catch (err) {
+        return error(500, `Focus error: ${err.message}`);
+      }
+    }
+
     if (method === "GET" && path === "/pipeline-review/discussed") {
       try {
         if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ dealIds: [] });
