@@ -676,6 +676,24 @@ export default function RightNowView({ getToken }) {
               <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Loading recent emails…</div>
             )}
 
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4 }}>
+              Last meeting
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 14 }}>
+              {contactDetailLoading ? (
+                <span style={{ color: 'var(--text-tertiary)' }}>Loading…</span>
+              ) : contactDetail?.lastMeeting ? (
+                <>
+                  {contactDetail.lastMeeting.subject} — {timeAgo(contactDetail.lastMeeting.timestamp)}
+                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginLeft: 6 }}>
+                    (via {contactDetail.lastMeeting.source === 'outlook' ? 'Outlook' : 'HubSpot'})
+                  </span>
+                </>
+              ) : (
+                <span style={{ color: 'var(--text-tertiary)' }}>No meeting found in HubSpot or Outlook.</span>
+              )}
+            </div>
+
             {!contactDetailLoading && emailEngagements.length > 0 && (
               <>
                 <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 8 }}>

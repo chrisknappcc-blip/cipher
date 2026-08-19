@@ -255,14 +255,15 @@ export default function PipelineReviewView({ getToken }) {
   }, [companyModeActive, sortedDeals, config, stages, hiddenPipelines])
 
   const selectedDeal = deals.find(d => d.id === selectedDealId) || null
+  const [lastMeeting, setLastMeeting] = useState(null)
 
   useEffect(() => {
-    if (!selectedDealId) { setRecap([]); return }
+    if (!selectedDealId) { setRecap([]); setLastMeeting(null); return }
     let cancelled = false
     setRecapLoading(true)
     apiFetch(`/api/hubspot/pipeline-review/deal/${selectedDealId}`, getToken)
-      .then(data => { if (!cancelled) setRecap(data.recap || []) })
-      .catch(() => { if (!cancelled) setRecap([]) })
+      .then(data => { if (!cancelled) { setRecap(data.recap || []); setLastMeeting(data.lastMeeting || null) } })
+      .catch(() => { if (!cancelled) { setRecap([]); setLastMeeting(null) } })
       .finally(() => { if (!cancelled) setRecapLoading(false) })
     return () => { cancelled = true }
   }, [selectedDealId, getToken])
@@ -727,6 +728,24 @@ export default function PipelineReviewView({ getToken }) {
             </div>
             <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, marginBottom: 16 }}>
               {selectedDeal.nextStep || <span style={{ color: 'var(--text-tertiary)' }}>No next step recorded in HubSpot.</span>}
+            </div>
+
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4 }}>
+              Last meeting
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, marginBottom: 16 }}>
+              {recapLoading ? (
+                <span style={{ color: 'var(--text-tertiary)' }}>Loading…</span>
+              ) : lastMeeting ? (
+                <>
+                  {lastMeeting.subject} — {formatDate(lastMeeting.timestamp)}
+                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginLeft: 6 }}>
+                    (via {lastMeeting.source === 'outlook' ? 'Outlook' : 'HubSpot'})
+                  </span>
+                </>
+              ) : (
+                <span style={{ color: 'var(--text-tertiary)' }}>No meeting found in HubSpot or Outlook.</span>
+              )}
             </div>
 
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 8 }}>
