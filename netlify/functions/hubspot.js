@@ -635,6 +635,50 @@ async function fetchEngagements(userId, contactId, limit = 50) {
   }
 }
 
+// ─── Last meeting lookup — checks both HubSpot and Outlook ─────────────────
+// Neither source alone is reliable: a meeting logged in HubSpot might not
+// exist there if it was only ever a calendar invite, and Outlook only shows
+// meetings the current user personally attended. Checking both and taking
+// whichever is more recent is the only way to get an accurate answer.
+function findLastHubSpotMeeting(engagements) {
+  const meetings = (engagements || []).filter(e => e.type === "MEETING" && e.timestamp);
+  if (meetings.length === 0) return null;
+  meetings.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  const top = meetings[0];
+  return { subject: top.subject || "Meeting", timestamp: top.timestamp, source: "hubspot" };
+}
+
+async function findLastOutlookMeeting(userId, emails) {
+  if (!emails || emails.length === 0) return null;
+  const emailSet = new Set(emails.filter(Boolean).map(e => e.toLowerCase()));
+  if (emailSet.size === 0) return null;
+  const windowStart = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
+  const windowEnd = new Date(); // only past meetings count as "last meeting that occurred"
+  const events = await getOutlookCalendarEvents(userId, windowStart, windowEnd).catch(() => []);
+  const matched = events.filter(ev =>
+    (ev.attendees || []).some(a => emailSet.has((a.emailAddress?.address || "").toLowerCase()))
+  );
+  if (matched.length === 0) return null;
+  matched.sort((a, b) => new Date(b.start?.dateTime || 0) - new Date(a.start?.dateTime || 0));
+  const top = matched[0];
+  return {
+    subject: top.subject || "Meeting",
+    timestamp: top.start?.dateTime ? `${top.start.dateTime}Z` : null,
+    source: "outlook",
+  };
+}
+
+async function findLastMeeting(userId, engagements, emails) {
+  const [fromHubSpot, fromOutlook] = await Promise.all([
+    findLastHubSpotMeeting(engagements),
+    findLastOutlookMeeting(userId, emails),
+  ]);
+  const candidates = [fromHubSpot, fromOutlook].filter(Boolean);
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+  return candidates[0];
+}
+
 async function fetchTimelineEvents(userId, contactId, limit = 50) {
   try {
     const data = await hsGet(
@@ -2061,7 +2105,9 @@ export const handler = async (event, context) => {
         }),
         fetchEngagements(user.userId, id, 20),
       ]);
-      return ok({ contact, engagements });
+      const contactEmail = contact.properties?.email;
+      const lastMeeting = await findLastMeeting(user.userId, engagements, [contactEmail]);
+      return ok({ contact, engagements, lastMeeting });
     }
 
     // ── Full merged activity feed for a contact ──────────────────────────────
@@ -7087,19 +7133,36 @@ export const handler = async (event, context) => {
     if (method === "GET" && path.startsWith("/pipeline-review/deal/")) {
       try {
         const dealId = path.replace("/pipeline-review/deal/", "");
-        const engagementsData = await hsGet(user.userId, `/engagements/v1/engagements/associated/DEAL/${dealId}/paged`, { limit: 10 }).catch(() => ({ results: [] }));
+        const engagementsData = await hsGet(user.userId, `/engagements/v1/engagements/associated/DEAL/${dealId}/paged`, { limit: 20 }).catch(() => ({ results: [] }));
 
-        const recap = (engagementsData.results || []).map(eng => ({
+        const allEngagements = (engagementsData.results || []).map(eng => ({
           type: eng.engagement?.type || "UNKNOWN",
           timestamp: eng.engagement?.timestamp ? new Date(eng.engagement.timestamp).toISOString() : null,
           body: stripHtml(eng.metadata?.body || eng.metadata?.text || null),
           subject: eng.metadata?.subject || null,
-        }))
-        .filter(e => e.body || e.subject)
-        .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
-        .slice(0, 5);
+        }));
 
-        return ok({ recap });
+        const recap = allEngagements
+          .filter(e => e.body || e.subject)
+          .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
+          .slice(0, 5);
+
+        // Need the deal's contact emails to check Outlook — a deal has no
+        // direct "attendee" concept, so this goes through its contacts.
+        const contactAssoc = await batchFetchAssociations(user.userId, "deals", "contacts", [dealId]);
+        const contactIds = contactAssoc[dealId] || [];
+        let contactEmails = [];
+        if (contactIds.length > 0) {
+          const contactBatch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+            inputs: contactIds.slice(0, 20).map(id => ({ id })),
+            properties: ["email"],
+          }).catch(() => ({ results: [] }));
+          contactEmails = (contactBatch.results || []).map(c => c.properties?.email).filter(Boolean);
+        }
+
+        const lastMeeting = await findLastMeeting(user.userId, allEngagements, contactEmails);
+
+        return ok({ recap, lastMeeting });
       } catch (err) {
         return error(500, `Deal recap error: ${err.message}`);
       }
