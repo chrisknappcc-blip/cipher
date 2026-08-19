@@ -175,6 +175,31 @@ const ADMIN_USER_IDS = new Set(
 // Check admin by email (preferred) OR by UUID (legacy)
 const isAdminUser = (u) => ADMIN_EMAILS.has((u?.email || "").toLowerCase()) || ADMIN_USER_IDS.has(u?.userId || "");
 
+// ─── Team hierarchy — who can view whose Right Now Queue ───────────────────
+// Separate from ADMIN_EMAILS on purpose: ADMIN_EMAILS gates other admin
+// features and means "full access to everything." This is specifically
+// about scoped visibility — a manager sees their own direct reports, not
+// necessarily the whole company. TEAM_HIERARCHY env var is a JSON object:
+//   { "chris@x.com": ["chiara@x.com", "abby@x.com"], "john@x.com": ["*"] }
+// A report list containing "*" means "can see everyone." Editing this env
+// var (no code change needed) is how new hires get added — e.g. when Abby
+// and Harley actually join, add their emails to Chris's list.
+let TEAM_HIERARCHY = {};
+try {
+  TEAM_HIERARCHY = JSON.parse(process.env.TEAM_HIERARCHY || "{}");
+} catch (e) {
+  console.error("[team-hierarchy] Failed to parse TEAM_HIERARCHY env var:", e.message);
+}
+
+function getTeamVisibility(requestingEmail) {
+  const email = (requestingEmail || "").toLowerCase();
+  const entry = Object.entries(TEAM_HIERARCHY).find(([mgr]) => mgr.toLowerCase() === email);
+  if (!entry) return { canAccess: false, all: false, emails: new Set([email]) };
+  const reports = (entry[1] || []).map(e => String(e).toLowerCase());
+  if (reports.includes("*")) return { canAccess: true, all: true, emails: null };
+  return { canAccess: true, all: false, emails: new Set([email, ...reports]) };
+}
+
 const HS_CLIENT_ID     = process.env.HUBSPOT_CLIENT_ID;
 const HS_CLIENT_SECRET = process.env.HUBSPOT_CLIENT_SECRET;
 const HS_REDIRECT_URI  = process.env.HUBSPOT_REDIRECT_URI;
@@ -1618,7 +1643,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
           { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
         ],
       }],
-      properties: ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time"],
+      properties: ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time", "hubspot_owner_id", "hs_attendee_owner_ids"],
       limit: 100,
     }).catch(() => ({ results: [] }));
 
@@ -1685,6 +1710,13 @@ export async function computeRightNowQueue(userId, qp = {}) {
       ...m,
       contactId: (meetingContactAssoc[m.id] || [])[0] || null,
     }));
+    const hsMeetingMetaById = {};
+    hsMeetingsRaw.forEach(m => {
+      hsMeetingMetaById[m.id] = {
+        ownerId: m.properties?.hubspot_owner_id || null,
+        attendeeOwnerIds: String(m.properties?.hs_attendee_owner_ids || "").split(";").map(s => s.trim()).filter(Boolean),
+      };
+    });
 
     // ── Outlook meetings, same window ────────────────────────────────────
     const outlookEvents = await getOutlookCalendarEvents(userId, meetingWindowStart, meetingWindowEnd);
@@ -1724,24 +1756,24 @@ export async function computeRightNowQueue(userId, qp = {}) {
     // ── Merge, dedup, score ───────────────────────────────────────────────
     const mergedMeetings = mergeMeetings(hsMeetings, outlookEvents, contactMap, contactsByEmail);
 
-    // Filter to meetings that actually belong to this user's own accounts.
-    // A meeting with a matched contact only counts as "mine" if I'm the
-    // assigned BDR / Primary Outreach Rep / owner on that contact — not
-    // just because the raw meeting record happens to be on my calendar or
-    // owned by me in HubSpot's eyes. This is what fixes seeing a colleague's
-    // account meeting (I was CC'd/attending) and also fixes the reverse —
-    // a meeting record misattributed to someone else even though the
-    // account is genuinely mine. Contactless meetings (internal, no CRM
-    // contact to check) are kept as-is; there's no better signal without
-    // more work, and they're already protected by the Gong-title filter.
+    // Filter to meetings the current user actually scheduled or attends.
+    // Deliberately NOT based on the matched contact's assigned_bdr/owner —
+    // that field describes who's nominally responsible for the account,
+    // which can be stale or simply not reflect who's really running a given
+    // relationship (a colleague can be genuinely driving an account even
+    // when a CRM field still lists someone else). Real participation is
+    // the honest signal: did I schedule this meeting, or am I listed as
+    // an attendee. Outlook events are trusted as-is — they only ever come
+    // from the current user's own calendar via their own OAuth token, so
+    // by definition they're already scoped to meetings involving them.
     const myMeetings = mergedMeetings.filter(m => {
-      if (!m.contact) return true;
-      const c = m.contact;
-      return (
-        (currentUserName && c.assignedBdr === currentUserName) ||
-        (currentUserName && c.primaryOutreachRep === currentUserName) ||
-        (meetingOwnerId && String(c.ownerId) === String(meetingOwnerId))
-      );
+      if (m.source !== "hubspot") return true;
+      const rawId = m.id.replace(/^hs-/, "");
+      const meta = hsMeetingMetaById[rawId];
+      if (!meta) return true; // no meta available — don't silently hide it
+      if (meetingOwnerId && String(meta.ownerId) === String(meetingOwnerId)) return true;
+      if (meetingOwnerId && meta.attendeeOwnerIds.includes(String(meetingOwnerId))) return true;
+      return false;
     });
 
     // ── Sequence state — sequences are now the primary outreach channel,
@@ -6879,17 +6911,23 @@ export const handler = async (event, context) => {
       }
     }
 
-    // GET /team/queue?userId=X — admin-only view of another rep's actual
-    // queue. The normal /right-now always operates on the calling user's
-    // own token, so this is a separate, explicitly gated path rather than
-    // adding a userId override to the regular endpoint (keeps the security
-    // boundary obvious: only this one route can ever return someone else's
-    // queue, and only for admins).
+    // GET /team/queue?userId=X — scoped view of another rep's actual queue.
+    // "Scoped" means: a manager can only view people in their own
+    // TEAM_HIERARCHY entry (or everyone, if their entry is ["*"]) — not
+    // blanket admin access. The normal /right-now always operates on the
+    // calling user's own token, so this is a separate, explicitly gated
+    // path rather than adding a userId override to the regular endpoint.
     if (method === "GET" && path === "/team/queue") {
-      if (!isAdminUser(user)) return error(403, "Admin only");
+      const visibility = getTeamVisibility(user.email);
+      if (!visibility.canAccess && !isAdminUser(user)) return error(403, "You don't have access to view other reps' queues");
       try {
         const targetUserId = qp.userId;
         if (!targetUserId) return error(400, "userId is required");
+        if (!visibility.all && !isAdminUser(user)) {
+          const profiles = await getActiveUserProfiles();
+          const targetEmail = (profiles.find(p => p.userId === targetUserId)?.email || "").toLowerCase();
+          if (!visibility.emails.has(targetEmail)) return error(403, "That person isn't on your team");
+        }
         const queue = await computeRightNowQueue(targetUserId, {});
         return ok({ queue });
       } catch (err) {
@@ -6898,12 +6936,17 @@ export const handler = async (event, context) => {
     }
 
     // GET /team — manager roster: every known user's queue depth, oldest
-    // unactioned item, and today's completion count. Admin-only, gated the
-    // same way the existing tab-admin features are.
+    // unactioned item, and today's completion count. Scoped the same way
+    // as /team/queue above — shows only the requester's own team, unless
+    // their TEAM_HIERARCHY entry is ["*"] or they're a full admin.
     if (method === "GET" && path === "/team") {
-      if (!isAdminUser(user)) return error(403, "Admin only");
+      const visibility = getTeamVisibility(user.email);
+      if (!visibility.canAccess && !isAdminUser(user)) return error(403, "You don't have access to the team view");
       try {
-        const profiles = await getActiveUserProfiles();
+        let profiles = await getActiveUserProfiles();
+        if (!visibility.all && !isAdminUser(user)) {
+          profiles = profiles.filter(p => visibility.emails.has((p.email || "").toLowerCase()));
+        }
         const roster = await Promise.all(profiles.map(async (p) => {
           try {
             const queue = await computeRightNowQueue(p.userId, {});
@@ -6936,12 +6979,19 @@ export const handler = async (event, context) => {
 
     // POST /team/push  { targetUserId, text, contactId? }  — manager pushes
     // a task directly into a rep's Right Now queue, tagged so the rep can
-    // see it came from a manager, not the formula or their own pin.
+    // see it came from a manager, not the formula or their own pin. Scoped
+    // the same way — can only push to someone within your own visibility.
     if (method === "POST" && path === "/team/push") {
-      if (!isAdminUser(user)) return error(403, "Admin only");
+      const visibility = getTeamVisibility(user.email);
+      if (!visibility.canAccess && !isAdminUser(user)) return error(403, "You don't have access to push to other reps");
       try {
         const body = JSON.parse(event.body || "{}");
         if (!body.targetUserId || !body.text?.trim()) return error(400, "targetUserId and text are required");
+        if (!visibility.all && !isAdminUser(user)) {
+          const profiles = await getActiveUserProfiles();
+          const targetEmail = (profiles.find(p => p.userId === body.targetUserId)?.email || "").toLowerCase();
+          if (!visibility.emails.has(targetEmail)) return error(403, "That person isn't on your team");
+        }
         const managerName = user.email || "Manager";
         const item = await addTodo(body.targetUserId, {
           text: body.text.trim(),
