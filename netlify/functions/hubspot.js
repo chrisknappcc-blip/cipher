@@ -583,6 +583,8 @@ function normalizeContact(c) {
     numContacted: p.num_contacted_notes || "0",
     // Custom properties
     assignedBdr:         p.assigned_bdr || "",
+    ownerId:             p.hubspot_owner_id || "",
+    primaryOutreachRep:  p.primary_outreach_rep || "",
     targetAccount:       p.target_account__bdr_led_outreach || "",
     territory:           p.territory || "",
     // priorityTier lives on Company object, not contact -- omitted here
@@ -1802,6 +1804,15 @@ export async function computeRightNowQueue(userId, qp = {}) {
         }
       }
 
+      // Live owner lookup (not a hardcoded rep list) so this doesn't need
+      // manual updates when new BDRs join — one call, cheap, already the
+      // same pattern used elsewhere in this file.
+      const ownersData = await hsGet(userId, "/crm/v3/owners", { limit: 100 }).catch(() => ({ results: [] }));
+      const ownerNamesById = {};
+      (ownersData.results || []).forEach(o => {
+        ownerNamesById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
+      });
+
       queue.forEach(item => {
         if (!item.contactId || !item.contact) return;
         const companyId = (contactCompanyAssoc[item.contactId] || [])[0] || null;
@@ -1811,6 +1822,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
           companyName: companyId ? (companyNamesById[companyId] || item.contact.company) : (item.contact.company || null),
           contactUrl: `https://app.hubspot.com/contacts/39921549/record/0-1/${item.contactId}`,
           companyUrl: companyId ? `https://app.hubspot.com/contacts/39921549/record/0-2/${companyId}` : null,
+          ownerName: item.contact.ownerId ? (ownerNamesById[String(item.contact.ownerId)] || null) : null,
         };
       });
     }
