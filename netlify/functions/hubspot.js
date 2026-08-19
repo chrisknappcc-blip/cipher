@@ -6821,25 +6821,44 @@ export const handler = async (event, context) => {
         if (companyIds.length > 0) {
           const companyData = await hsPost(user.userId, "/crm/v3/objects/companies/batch/read", {
             inputs: [...new Set(companyIds)].slice(0, 100).map(id => ({ id })),
-            properties: ["name"],
+            properties: ["name", "notes_last_updated"],
           }).catch(() => ({ results: [] }));
-          (companyData.results || []).forEach(c => { companiesById[c.id] = c.properties?.name || null; });
+          (companyData.results || []).forEach(c => {
+            companiesById[c.id] = { name: c.properties?.name || null, lastContact: c.properties?.notes_last_updated || null };
+          });
         }
 
-        const formatted = deals.map(d => ({
-          id: d.id,
-          name: d.properties?.dealname || "Untitled deal",
-          stageId: d.properties?.dealstage,
-          amount: d.properties?.amount || null,
-          nextStep: d.properties?.hs_next_step || null,
-          ownerId: d.properties?.hubspot_owner_id || null,
-          ownerName: ownersById[String(d.properties?.hubspot_owner_id)] || null,
-          companyName: companiesById[d.associations?.companies?.results?.[0]?.id] || null,
-          lastModified: d.properties?.hs_lastmodifieddate || null,
-          lastContact: d.properties?.notes_last_updated || null, // real "last contact" — notes/calls/emails/meetings/tasks, not just any field edit
-          activityCount: d.properties?.num_notes ? Number(d.properties.num_notes) : 0,
-          closeDate: d.properties?.closedate || null,
-        }));
+        const formatted = deals.map(d => {
+          const companyId = d.associations?.companies?.results?.[0]?.id;
+          const company = companiesById[companyId] || {};
+          // A deal's own notes_last_updated only reflects activity explicitly
+          // associated with the DEAL object — HubSpot does not roll up
+          // company/contact-level activity automatically. A meeting logged
+          // against the company (very common) can leave the deal looking
+          // stale even though real contact happened. Take whichever is more
+          // recent so this doesn't misrepresent actual engagement.
+          const dealLastContact = d.properties?.notes_last_updated || null;
+          const companyLastContact = company.lastContact || null;
+          const lastContact = [dealLastContact, companyLastContact]
+            .filter(Boolean)
+            .sort((a, b) => new Date(b) - new Date(a))[0] || null;
+
+          return {
+            id: d.id,
+            name: d.properties?.dealname || "Untitled deal",
+            stageId: d.properties?.dealstage,
+            amount: d.properties?.amount || null,
+            nextStep: d.properties?.hs_next_step || null,
+            ownerId: d.properties?.hubspot_owner_id || null,
+            ownerName: ownersById[String(d.properties?.hubspot_owner_id)] || null,
+            companyName: company.name || null,
+            lastModified: d.properties?.hs_lastmodifieddate || null,
+            lastContact,
+            lastContactSource: lastContact === companyLastContact && companyLastContact !== dealLastContact ? "company" : "deal",
+            activityCount: d.properties?.num_notes ? Number(d.properties.num_notes) : 0,
+            closeDate: d.properties?.closedate || null,
+          };
+        });
 
         return ok({ pipeline: { id: pipelineId, label: config.label }, stages: config.stages, deals: formatted });
       } catch (err) {
