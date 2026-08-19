@@ -1748,6 +1748,63 @@ export async function getActiveUserIds() {
   } catch { return []; }
 }
 
+// ─── Pipeline Review stage config ───────────────────────────────────────────
+// IMPORTANT: verified empirically against real deal data, not assumed from
+// pipeline/stage names. The pipeline names in this portal are counterintuitive
+// relative to their actual stage content:
+//   - "New Business Opportunity Pipeline" (679336808) actually holds the
+//     EARLY-funnel/outreach stages (Target Identified -> Meeting Completed).
+//   - "New Business Deal Pipeline" (678610513) actually holds the LATE-stage
+//     opportunity stages (Qualified -> Contracting/Legal) — what most people
+//     would intuitively call the "Opportunity" pipeline.
+// Don't "fix" this to match what the names imply — it would silently put
+// deals in the wrong bucket. This mapping matches what's actually in HubSpot.
+const PIPELINE_STAGES = {
+  "679336808": {
+    label: "New Business Opportunity Pipeline",
+    stages: [
+      { id: "995708483",  label: "Target Identified" },
+      { id: "995708484",  label: "Initial Outreach/Reengaged" },
+      { id: "1284036410", label: "Email Opened/No Response" },
+      { id: "1288757038", label: "Reengagement Needed" },
+      { id: "995708485",  label: "Engaged" },
+      { id: "995708486",  label: "Meeting Scheduled" },
+      { id: "995708487",  label: "Meeting Completed" },
+      { id: "995708488",  label: "Qualified (Deal Pipeline)" },
+      { id: "995708489",  label: "Unengaged" },
+      { id: "996311842",  label: "Trade Show Meeting Follow-Up" },
+      { id: "1331037807", label: "Meeting Completed - Not A Fit" },
+      { id: "1331034125", label: "Meeting Completed - Partnership Opportunity" },
+    ],
+    closedStages: ["1347324753"],
+  },
+  "678610513": {
+    label: "New Business Deal Pipeline",
+    stages: [
+      { id: "995756094", label: "Qualified" },
+      { id: "995756095", label: "Problem Solution Fit" },
+      { id: "995756096", label: "Value Prop/Scoping" },
+      { id: "995756097", label: "Pricing Proposal" },
+      { id: "995756098", label: "IT/Technical Review" },
+      { id: "995756099", label: "Contracting/Legal" },
+      { id: "995750000", label: "Revisit" },
+    ],
+    closedStages: ["995749999", "995756100"],
+  },
+  "679502246": {
+    label: "Expansion Deal Pipeline",
+    stages: [
+      { id: "995723921",  label: "Expansion Targets" },
+      { id: "995723922",  label: "Engaged" },
+      { id: "995723923",  label: "Value Prop/Scoping" },
+      { id: "995723924",  label: "Pricing Proposal" },
+      { id: "995723926",  label: "Procurement/Contracting" },
+      { id: "1004627778", label: "Revist" },
+    ],
+    closedStages: ["995739776", "995723927"],
+  },
+};
+
 // ─── Main router ──────────────────────────────────────────────────────────────
 
 export const handler = async (event, context) => {
@@ -6712,6 +6769,103 @@ export const handler = async (event, context) => {
         return ok({ item });
       } catch (err) {
         return error(500, `Push error: ${err.message}`);
+      }
+    }
+
+    // GET /pipeline-review/config — the stage config, so the frontend has
+    // one source of truth instead of duplicating the pipeline/stage list.
+    if (method === "GET" && path === "/pipeline-review/config") {
+      return ok({ pipelines: PIPELINE_STAGES });
+    }
+
+    // GET /pipeline-review?pipeline=X&ownerId=Y — open deals for one
+    // pipeline at a time (matches walking the team through one pipeline,
+    // then the next, in the actual meeting), whole team by default,
+    // optionally narrowed to one owner.
+    if (method === "GET" && path === "/pipeline-review") {
+      try {
+        const pipelineId = qp.pipeline;
+        if (!pipelineId || !PIPELINE_STAGES[pipelineId]) {
+          return error(400, `pipeline is required and must be one of: ${Object.keys(PIPELINE_STAGES).join(", ")}`);
+        }
+        const config = PIPELINE_STAGES[pipelineId];
+        const filters = [
+          { propertyName: "pipeline", operator: "EQ", value: pipelineId },
+          { propertyName: "dealstage", operator: "NOT_IN", values: config.closedStages },
+        ];
+        if (qp.ownerId) filters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: qp.ownerId });
+
+        const dealsData = await hsPost(user.userId, "/crm/v3/objects/deals/search", {
+          filterGroups: [{ filters }],
+          properties: ["dealname", "dealstage", "pipeline", "amount", "hs_next_step", "hubspot_owner_id", "hs_lastmodifieddate", "closedate"],
+          associations: ["companies"],
+          sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
+          limit: 200,
+        }).catch(() => ({ results: [] }));
+
+        const deals = dealsData.results || [];
+
+        // Batch-resolve owner names and company names in two calls instead
+        // of N+1 — same pattern used elsewhere in this file.
+        const ownerIds = [...new Set(deals.map(d => d.properties?.hubspot_owner_id).filter(Boolean))];
+        const ownersById = {};
+        if (ownerIds.length > 0) {
+          const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 }).catch(() => ({ results: [] }));
+          (ownersData.results || []).forEach(o => {
+            ownersById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
+          });
+        }
+
+        const companyIds = deals.map(d => d.associations?.companies?.results?.[0]?.id).filter(Boolean);
+        const companiesById = {};
+        if (companyIds.length > 0) {
+          const companyData = await hsPost(user.userId, "/crm/v3/objects/companies/batch/read", {
+            inputs: [...new Set(companyIds)].slice(0, 100).map(id => ({ id })),
+            properties: ["name"],
+          }).catch(() => ({ results: [] }));
+          (companyData.results || []).forEach(c => { companiesById[c.id] = c.properties?.name || null; });
+        }
+
+        const formatted = deals.map(d => ({
+          id: d.id,
+          name: d.properties?.dealname || "Untitled deal",
+          stageId: d.properties?.dealstage,
+          amount: d.properties?.amount || null,
+          nextStep: d.properties?.hs_next_step || null,
+          ownerId: d.properties?.hubspot_owner_id || null,
+          ownerName: ownersById[String(d.properties?.hubspot_owner_id)] || null,
+          companyName: companiesById[d.associations?.companies?.results?.[0]?.id] || null,
+          lastModified: d.properties?.hs_lastmodifieddate || null,
+          closeDate: d.properties?.closedate || null,
+        }));
+
+        return ok({ pipeline: { id: pipelineId, label: config.label }, stages: config.stages, deals: formatted });
+      } catch (err) {
+        return error(500, `Pipeline review error: ${err.message}`);
+      }
+    }
+
+    // GET /pipeline-review/deal/:id — recap detail for one deal: recent
+    // notes/calls/meetings so a presenter has real talking points, not
+    // just the stage and next-step property.
+    if (method === "GET" && path.startsWith("/pipeline-review/deal/")) {
+      try {
+        const dealId = path.replace("/pipeline-review/deal/", "");
+        const engagementsData = await hsGet(user.userId, `/engagements/v1/engagements/associated/DEAL/${dealId}/paged`, { limit: 10 }).catch(() => ({ results: [] }));
+
+        const recap = (engagementsData.results || []).map(eng => ({
+          type: eng.engagement?.type || "UNKNOWN",
+          timestamp: eng.engagement?.timestamp ? new Date(eng.engagement.timestamp).toISOString() : null,
+          body: eng.metadata?.body || eng.metadata?.text || null,
+          subject: eng.metadata?.subject || null,
+        }))
+        .filter(e => e.body || e.subject)
+        .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
+        .slice(0, 5);
+
+        return ok({ recap });
+      } catch (err) {
+        return error(500, `Deal recap error: ${err.message}`);
       }
     }
 
