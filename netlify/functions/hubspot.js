@@ -621,7 +621,7 @@ async function fetchEngagements(userId, contactId, limit = 50) {
       type:          eng.engagement?.type || "UNKNOWN",
       timestamp:     eng.engagement?.createdAt || eng.engagement?.timestamp || null,
       subject:       eng.metadata?.subject || eng.metadata?.title || null,
-      body:          eng.metadata?.body || eng.metadata?.text || null,
+      body:          stripHtml(eng.metadata?.body || eng.metadata?.text || null),
       numOpens:      eng.metadata?.numOpens      || 0,
       numClicks:     eng.metadata?.numClicks     || 0,
       replied:       eng.metadata?.replied       || false,
@@ -820,6 +820,30 @@ async function fetchMarketingEmailRecipientEvents(userId, since) {
 // ── OOO Detection ────────────────────────────────────────────────────────────
 const OOO_SUBJECT_RE = /^(automatic reply|auto.?reply|autoreply|out of (the )?office|ooo\s*:|away from (the )?office|on vacation|on (annual |extended )?(leave|holiday)|not in (the )?office)/i;
 const OOO_BODY_RE    = /(i('m| am) (currently )?(out|away|on vacation|on leave)|i('ll| will) (be )?(back|return)|out of (the )?office (until|on|from)|automatic(ally)? (reply|response)|will (return|be back) (on|by)|currently (unavailable|traveling|on leave)|on (maternity|paternity|medical|parental|bereavement) leave)/i;
+
+// HubSpot note/email engagement bodies come back as raw HTML (e.g.
+// `<div><p>Meeting notes...</p></div>`), not plain text. Every place that
+// displays engagement body content needs this, or the UI shows literal
+// "<div><p>" tags instead of the actual note. Regex-based rather than a DOM
+// parser since this runs in a Node serverless function with no DOM
+// available — good enough for HubSpot's fairly simple rich-text markup.
+function stripHtml(html) {
+  if (!html) return null;
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim() || null;
+}
 
 function isOooReply(subject, body) {
   if (OOO_SUBJECT_RE.test(subject || "")) return true;
@@ -6863,6 +6887,9 @@ export const handler = async (event, context) => {
           ownerId: d.properties?.hubspot_owner_id || null,
           ownerName: ownersById[String(d.properties?.hubspot_owner_id)] || null,
           companyName: company.name || null,
+          companyId: companyId || null,
+          hubspotDealUrl: `https://app.hubspot.com/contacts/39921549/record/0-3/${d.id}`,
+          hubspotCompanyUrl: companyId ? `https://app.hubspot.com/contacts/39921549/record/0-2/${companyId}` : null,
           lastModified: d.properties?.hs_lastmodifieddate || null,
           lastContact: winner.at,
           lastContactSource: winner.source,
@@ -6916,17 +6943,17 @@ export const handler = async (event, context) => {
           properties: DEAL_SEARCH_PROPERTIES,
         }).catch(() => ({ results: [] }));
 
-        // batch/read doesn't return associations — fetch those separately
-        // for the company (already known) and contacts (needed for accuracy).
-        const dealsWithAssoc = await Promise.all((dealBatch.results || []).map(async d => {
-          const contactsAssoc = await hsGet(user.userId, `/crm/v4/objects/deals/${d.id}/associations/contacts`, {}).catch(() => ({ results: [] }));
-          return {
-            ...d,
-            associations: {
-              companies: { results: [{ id: dealToCompanyId[d.id] || null }] },
-              contacts: { results: (contactsAssoc.results || []).map(r => ({ id: r.toObjectId || r.id })) },
-            },
-          };
+        // batch/read doesn't return associations — fetch those separately.
+        // Company is already known per-deal from the earlier lookup; contacts
+        // need a real fetch, now via the same batch helper used in pipeline
+        // mode instead of one GET call per deal.
+        const companyModeContactAssoc = await batchFetchAssociations(user.userId, "deals", "contacts", (dealBatch.results || []).map(d => d.id));
+        const dealsWithAssoc = (dealBatch.results || []).map(d => ({
+          ...d,
+          associations: {
+            companies: { results: dealToCompanyId[d.id] ? [{ id: dealToCompanyId[d.id] }] : [] },
+            contacts: { results: (companyModeContactAssoc[d.id] || []).map(id => ({ id })) },
+          },
         }));
 
         // Exclude closed deals across whichever pipeline each one belongs to.
@@ -6941,6 +6968,25 @@ export const handler = async (event, context) => {
       } catch (err) {
         return error(500, `Pipeline review company search error: ${err.message}`);
       }
+    }
+
+    // Real batch associations fetch. The Search API (used just below) never
+    // returns an associations block no matter what's passed to it — that's
+    // documented and confirmed HubSpot behavior, not a bug on our end — so
+    // associations always need this separate call after searching.
+    async function batchFetchAssociations(userId, fromType, toType, ids) {
+      if (ids.length === 0) return {};
+      const result = {};
+      for (let i = 0; i < ids.length; i += 100) {
+        const chunk = ids.slice(i, i + 100);
+        const data = await hsPost(userId, `/crm/v4/associations/${fromType}/${toType}/batch/read`, {
+          inputs: chunk.map(id => ({ id })),
+        }).catch(() => ({ results: [] }));
+        (data.results || []).forEach(r => {
+          result[r.from?.id] = (r.to || []).map(t => t.toObjectId);
+        });
+      }
+      return result;
     }
 
     if (method === "GET" && path === "/pipeline-review") {
@@ -6959,13 +7005,27 @@ export const handler = async (event, context) => {
         const dealsData = await hsPost(user.userId, "/crm/v3/objects/deals/search", {
           filterGroups: [{ filters }],
           properties: DEAL_SEARCH_PROPERTIES,
-          associations: ["companies", "contacts"],
           sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
           limit: 200,
         }).catch(() => ({ results: [] }));
 
         const deals = dealsData.results || [];
-        const formatted = await enrichAndFormatDeals(user.userId, deals);
+        const dealIds = deals.map(d => d.id);
+
+        const [companyAssoc, contactAssoc] = await Promise.all([
+          batchFetchAssociations(user.userId, "deals", "companies", dealIds),
+          batchFetchAssociations(user.userId, "deals", "contacts", dealIds),
+        ]);
+
+        const dealsWithAssoc = deals.map(d => ({
+          ...d,
+          associations: {
+            companies: { results: (companyAssoc[d.id] || []).map(id => ({ id })) },
+            contacts: { results: (contactAssoc[d.id] || []).map(id => ({ id })) },
+          },
+        }));
+
+        const formatted = await enrichAndFormatDeals(user.userId, dealsWithAssoc);
 
         return ok({ pipeline: { id: pipelineId, label: config.label }, stages: config.stages, deals: formatted });
       } catch (err) {
@@ -6984,7 +7044,7 @@ export const handler = async (event, context) => {
         const recap = (engagementsData.results || []).map(eng => ({
           type: eng.engagement?.type || "UNKNOWN",
           timestamp: eng.engagement?.timestamp ? new Date(eng.engagement.timestamp).toISOString() : null,
-          body: eng.metadata?.body || eng.metadata?.text || null,
+          body: stripHtml(eng.metadata?.body || eng.metadata?.text || null),
           subject: eng.metadata?.subject || null,
         }))
         .filter(e => e.body || e.subject)
