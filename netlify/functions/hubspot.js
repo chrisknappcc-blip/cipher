@@ -1790,38 +1790,14 @@ export async function computeRightNowQueue(userId, qp = {}) {
       myMeetings = [];
     }
 
-    // ── Sequence state — sequences are now the primary outreach channel,
-    // so a sequence quietly ending with no next step decided is a real gap.
-    // Bounded to the first 30 currently-enrolled contacts per run to keep
-    // the per-contact enrollment lookups (unavoidably one call each) bounded.
-    // Wrapped defensively, same reasoning as the meetings section above —
-    // this is a side feature, not core queue data, and must never be able
-    // to take the whole thing down.
-    try {
-      const enrolledContacts = (taskData.upcomingSequences || []).slice(0, 30);
-      const enrollmentResults = await Promise.all(
-        enrolledContacts.map(c => fetchSequenceEnrollments(userId, c.contactId).catch(() => []))
-      );
-      const confirmedSequenceIds = await getConfirmedSequenceIds(userId);
-      for (let i = 0; i < enrollmentResults.length; i++) {
-        const contact = enrolledContacts[i];
-        for (const enr of enrollmentResults[i]) {
-          if (enr.state === "FINISHED" && !confirmedSequenceIds.has(enr.id)) {
-            await addTodo(userId, {
-              contactId: contact.contactId,
-              text: `Sequence "${enr.subject}" ended for ${contact.contact?.name || "contact"} — decide next step`,
-              autoDetected: true,
-              priority: "HIGH",
-              createdAt: new Date().toISOString(),
-            });
-            await addConfirmedSequenceId(userId, enr.id, confirmedSequenceIds);
-            confirmedSequenceIds.add(enr.id);
-          }
-        }
-      }
-    } catch (err) {
-      console.error("[right-now] Sequence-state section failed, continuing:", err.message);
-    }
+    // Sequence-completion detection (a sequence quietly finishing with no
+    // next step decided) used to run inline here on every single page load
+    // — up to 30 contacts, 2 real HubSpot calls each, meaning up to 60 API
+    // round-trips before the queue could even return. That's the real
+    // source of the 5-10 second delay on opening/refreshing the Now tab.
+    // Moved to checkSequenceCompletions() below, run hourly from the
+    // scheduler instead — the resulting todo can be a few minutes late
+    // without costing anyone anything, unlike page-load speed.
 
     // ── Confirmation to-do: fire once per meeting, 3 days out ────────────
     const confirmedIds = await getConfirmedMeetingIds(userId);
@@ -1920,6 +1896,40 @@ export async function computeRightNowQueue(userId, qp = {}) {
 // associations block no matter what's passed to it — confirmed HubSpot
 // behavior, documented as still true as of 2025 — so associations always
 // need this separate call after searching, never the search request itself.
+// Sequence-completion detection — extracted out of the live /right-now
+// path (see comment above) so this runs on the hourly scheduler instead of
+// costing every single page load up to 60 API calls. Self-contained: pulls
+// its own upcomingSequences via computeTaskQueue rather than requiring the
+// caller to already have it.
+export async function checkSequenceCompletions(userId) {
+  try {
+    const taskData = await computeTaskQueue({ userId }, {});
+    const enrolledContacts = (taskData.upcomingSequences || []).slice(0, 30);
+    const enrollmentResults = await Promise.all(
+      enrolledContacts.map(c => fetchSequenceEnrollments(userId, c.contactId).catch(() => []))
+    );
+    const confirmedSequenceIds = await getConfirmedSequenceIds(userId);
+    for (let i = 0; i < enrollmentResults.length; i++) {
+      const contact = enrolledContacts[i];
+      for (const enr of enrollmentResults[i]) {
+        if (enr.state === "FINISHED" && !confirmedSequenceIds.has(enr.id)) {
+          await addTodo(userId, {
+            contactId: contact.contactId,
+            text: `Sequence "${enr.subject}" ended for ${contact.contact?.name || "contact"} — decide next step`,
+            autoDetected: true,
+            priority: "HIGH",
+            createdAt: new Date().toISOString(),
+          });
+          await addConfirmedSequenceId(userId, enr.id, confirmedSequenceIds);
+          confirmedSequenceIds.add(enr.id);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[checkSequenceCompletions] failed:", err.message);
+  }
+}
+
 async function batchFetchAssociations(userId, fromType, toType, ids) {
   if (ids.length === 0) return {};
   const result = {};

@@ -12,7 +12,7 @@
 // cache — this is the only place that ever calls the AI model for this
 // feature, so cost stays fixed at the scheduled cadence, not per page load.
 
-import { computeRightNowQueue, getActiveUserIds } from "./hubspot.js";
+import { computeRightNowQueue, getActiveUserIds, checkSequenceCompletions } from "./hubspot.js";
 
 const AZURE_ACCOUNT   = process.env.AZURE_STORAGE_ACCOUNT_NAME;
 const AZURE_SAS_TOKEN = process.env.AZURE_STORAGE_SAS_TOKEN;
@@ -110,6 +110,13 @@ export default async () => {
       }
 
       const queue = await computeRightNowQueue(userId, {});
+
+      // Moved here from the live /right-now path — this was costing every
+      // single page load up to 60 API calls (30 contacts, 2 calls each) to
+      // detect something that doesn't need to be instant. Once an hour is
+      // a perfectly fine cadence for "a sequence quietly finished."
+      await checkSequenceCompletions(userId);
+
       const pinnedData = await readJson(`pinned-${userId}.json`, { pinnedIds: [] });
       const pinnedIds = new Set(pinnedData.pinnedIds || []);
 
