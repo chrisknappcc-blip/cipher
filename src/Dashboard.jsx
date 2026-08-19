@@ -2406,7 +2406,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
                 alignItems:'center', gap:4, padding:'8px 4px', width:'100%', position:'relative',
               }}>
               <NavIcon name={tab.icon} color={tab.color} active={activeTab===tab.key} />
-              <span style={{ fontSize:9, textAlign:'center', lineHeight:1.3, color: activeTab===tab.key ? tab.color : 'var(--text-tertiary)', opacity: activeTab===tab.key ? 1 : 0.85 }}>{tab.label}</span>
+              <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.01em', textAlign:'center', lineHeight:1.3, color: activeTab===tab.key ? tab.color : 'var(--text-secondary)' }}>{tab.label}</span>
               {tab.key === 'dashboard' && newSignalCount > 0 && (
                 <span style={{ position:'absolute', top:-2, right:6, fontSize:9, fontWeight:600, background:'var(--red)', color:'#fff', borderRadius:10, padding:'0px 5px', minWidth:14, textAlign:'center' }}>
                   {newSignalCount}
