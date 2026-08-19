@@ -14,6 +14,19 @@
   --radius-xl: 20px;
   --shadow: 0 1px 3px rgba(0,0,0,0.06);
   --shadow-soft: 0 2px 12px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.04);
+
+  /* Sidebar nav icon identity colors — one per tab, constant across every
+     theme (light/dark, all 5 color themes) so each icon has its own
+     recognizable color rather than all sharing one accent/gray treatment.
+     Chosen at moderate saturation/lightness so they read clearly on both
+     a dark navy sidebar and a light cream one. */
+  --nav-now: #3FA9A0;
+  --nav-dashboard: #2E86AB;
+  --nav-gold: #C9A227;
+  --nav-goldoverview: #C9622F;
+  --nav-pipeline: #7B5FB5;
+  --nav-team: #C25B9E;
+  --nav-reports: #5B8C3A;
 }
 
 /* ── Light mode — ebook/paper off-white, not stark clinical white ──────────

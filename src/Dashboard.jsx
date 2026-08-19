@@ -2299,13 +2299,13 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
   )
 
   const NAV_ITEMS = [
-    { key:'right-now',     label:'Now',     icon:'bolt' },
-    { key:'dashboard',     label:'Dashboard',icon:'list' },
-    { key:'gold-command',  label:'Gold Accounts', icon:'star' },
-    { key:'gold-overview', label:'Gold Overview', icon:'grid' },
-    { key:'reports',       label:'Reports', icon:'chart' },
-    { key:'pipeline-review', label:'Pipeline Review', icon:'pipeline' },
-    { key:'team',          label:'Team',    icon:'users' },
+    { key:'right-now',     label:'Now',     icon:'bolt',     color:'var(--nav-now)' },
+    { key:'dashboard',     label:'Dashboard',icon:'list',    color:'var(--nav-dashboard)' },
+    { key:'gold-command',  label:'Gold Accounts', icon:'star', color:'var(--nav-gold)' },
+    { key:'gold-overview', label:'Gold Overview', icon:'grid', color:'var(--nav-goldoverview)' },
+    { key:'reports',       label:'Reports', icon:'chart',    color:'var(--nav-reports)' },
+    { key:'pipeline-review', label:'Pipeline Review', icon:'pipeline', color:'var(--nav-pipeline)' },
+    { key:'team',          label:'Team',    icon:'users',    color:'var(--nav-team)' },
   ]
 
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -2317,9 +2317,9 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     { key: 'sunset', label: 'Sunset', swatch: '#E0793C' },
   ]
 
-  const NavIcon = ({ name, active }) => {
-    const color = active ? 'var(--accent)' : 'var(--text-secondary)'
-    const common = { width:20, height:20, viewBox:'0 0 24 24', fill:'none', stroke:color, strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round' }
+  const NavIcon = ({ name, color, active }) => {
+    const strokeColor = color || 'var(--text-secondary)'
+    const common = { width:20, height:20, viewBox:'0 0 24 24', fill:'none', stroke:strokeColor, strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round', style:{ opacity: active ? 1 : 0.6 } }
     if (name === 'bolt')  return <svg {...common}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
     if (name === 'star')  return <svg {...common}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
     if (name === 'grid')  return <svg {...common}><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
@@ -2400,13 +2400,13 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
           {NAV_ITEMS.map(tab => (
             <button key={tab.key} onClick={() => { setActiveTab(tab.key); if (tab.key === 'dashboard') setNewSignalCount(0) }}
               style={{
-                background: activeTab===tab.key ? 'var(--accent-light)' : 'none',
-                border: activeTab===tab.key ? '1px solid var(--accent)' : '1px solid transparent',
+                background: activeTab===tab.key ? `color-mix(in srgb, ${tab.color} 16%, transparent)` : 'none',
+                border: '1px solid ' + (activeTab===tab.key ? tab.color : 'transparent'),
                 borderRadius: 'var(--radius)', cursor:'pointer', display:'flex', flexDirection:'column',
                 alignItems:'center', gap:4, padding:'8px 4px', width:'100%', position:'relative',
               }}>
-              <NavIcon name={tab.icon} active={activeTab===tab.key} />
-              <span style={{ fontSize:9, textAlign:'center', lineHeight:1.3, color: activeTab===tab.key ? 'var(--accent)' : 'var(--text-tertiary)' }}>{tab.label}</span>
+              <NavIcon name={tab.icon} color={tab.color} active={activeTab===tab.key} />
+              <span style={{ fontSize:9, textAlign:'center', lineHeight:1.3, color: activeTab===tab.key ? tab.color : 'var(--text-tertiary)', opacity: activeTab===tab.key ? 1 : 0.85 }}>{tab.label}</span>
               {tab.key === 'dashboard' && newSignalCount > 0 && (
                 <span style={{ position:'absolute', top:-2, right:6, fontSize:9, fontWeight:600, background:'var(--red)', color:'#fff', borderRadius:10, padding:'0px 5px', minWidth:14, textAlign:'center' }}>
                   {newSignalCount}

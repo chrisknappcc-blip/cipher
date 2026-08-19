@@ -156,7 +156,7 @@ export default function TeamView({ getToken }) {
         )}
       </div>
 
-      <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)', alignSelf: 'start' }}>
+      <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)', position: 'sticky', top: 76, maxHeight: 'calc(100vh - 96px)', overflowY: 'auto' }}>
         {activeRep ? (
           <>
             <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>{activeRep.email || activeRep.userId}</div>
