@@ -1612,194 +1612,213 @@ export async function computeRightNowQueue(userId, qp = {}) {
     )];
 
     // ── Meetings: HubSpot (last 3 days through next 14) ──────────────────
-    const meetingWindowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-    const meetingWindowEnd   = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
-
-    // Scope to the current user's own meetings — this query previously had
-    // no owner filter at all, confirmed by testing it directly: with zero
-    // filters it returns every meeting in the entire portal (2,858 results),
-    // meaning Today's Meetings was showing everyone's meetings, not just
-    // the logged-in rep's own calendar.
-    let meetingOwnerId = null;
-    let currentUserName = null;
+    // Everything meeting-related is wrapped in its own try/catch so a
+    // failure here (bad data, an API hiccup, anything) can NEVER take down
+    // the whole queue — signals, tasks, and todos must still return even if
+    // meetings fail outright. This is a real lesson from this file: a bug
+    // in meeting-handling has broken the entire Right Now Queue twice now,
+    // and it should never have been able to do that in the first place.
+    let myMeetings = [];
     try {
-      const meData = await hsGet(userId, "/crm/v3/owners/me", {});
-      meetingOwnerId = meData?.id || null;
-      currentUserName = meData ? `${meData.firstName || ""} ${meData.lastName || ""}`.trim() : null;
-    } catch { /* fall through without owner scoping if this fails */ }
+      const meetingWindowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      const meetingWindowEnd   = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
-    // No owner filter here anymore — a meeting RECORD's own owner (often
-    // whoever created/synced the calendar entry) is a different thing from
-    // who the ACCOUNT actually belongs to. Filtering by meeting-owner was
-    // both too strict (excluded genuine internal meetings the user attended
-    // but didn't "own" in HubSpot) and wrong for account-based cases (a
-    // meeting record can say "Joe" while the underlying contact is BDR-
-    // assigned to someone else entirely). Real filtering happens below,
-    // after matching each meeting to its contact.
-    const meetData = await hsPost(userId, "/crm/v3/objects/meetings/search", {
-      filterGroups: [{
-        filters: [
-          { propertyName: "hs_meeting_start_time", operator: "GTE", value: meetingWindowStart.toISOString() },
-          { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
-        ],
-      }],
-      properties: ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time", "hubspot_owner_id", "hs_attendee_owner_ids"],
-      limit: 100,
-    }).catch(() => ({ results: [] }));
-
-    const hsMeetingsRaw = meetData.results || [];
-    // The Search API never returns an associations block (same confirmed
-    // HubSpot limitation already fixed elsewhere for deals) — the old
-    // `associations: ["contacts"]` param here was silently ignored, meaning
-    // every HubSpot-logged meeting lost its contact link and showed with no
-    // name/company attached. Real batch fetch instead.
-    const meetingContactAssoc = await batchFetchAssociations(userId, "meetings", "contacts", hsMeetingsRaw.map(m => m.id));
-    const meetingContactIds = [...new Set(Object.values(meetingContactAssoc).flat())];
-
-    // ── Batch-fetch all contacts we need in one call (signals + meetings) ─
-    const allContactIds = [...new Set([...eventContactIds, ...meetingContactIds])];
-    const contactMap = {};
-    const contactsByEmail = {};
-    if (allContactIds.length > 0) {
+      // Scope to the current user's own meetings — this query previously had
+      // no owner filter at all, confirmed by testing it directly: with zero
+      // filters it returns every meeting in the entire portal (2,858 results),
+      // meaning Today's Meetings was showing everyone's meetings, not just
+      // the logged-in rep's own calendar.
+      let meetingOwnerId = null;
+      let currentUserName = null;
       try {
-        const batch = await hsPost(userId, "/crm/v3/objects/contacts/batch/read", {
-          properties: BASE_CONTACT_PROPS,
-          inputs: allContactIds.map(id => ({ id })),
-        });
-        (batch.results || []).forEach(c => {
-          const info = normalizeContact(c);
-          contactMap[c.id] = info;
-          if (info.email) contactsByEmail[info.email.toLowerCase()] = info;
-        });
-      } catch { /* enrichment best-effort, same as /signals/recent */ }
-    }
+        const meData = await hsGet(userId, "/crm/v3/owners/me", {});
+        meetingOwnerId = meData?.id || null;
+        currentUserName = meData ? `${meData.firstName || ""} ${meData.lastName || ""}`.trim() : null;
+      } catch { /* fall through without owner scoping if this fails */ }
 
-    // ── Build signals in the exact shape rightNowQueue.js expects ────────
-    const signals = rawEvents
-      .map(ev => {
-        const contactId = ev.contactId ? String(ev.contactId) : null;
-        const contact = contactId ? (contactMap[contactId] || null) : null;
-        const eventType = ev.type;
-        let score = 0, label = "";
-        if (eventType === "REPLY") {
-          if (isAutomatedReply(ev.subject || null, null)) return null; // OOO or bounce, handled elsewhere (or not at all, for bounces)
-          score = 100; label = "Replied";
-        } else if (eventType === "CLICK") { score = 70; label = "Clicked link"; }
-        else if (eventType === "OPEN")   { score = 40; label = "Opened"; }
+      // No owner filter here anymore — a meeting RECORD's own owner (often
+      // whoever created/synced the calendar entry) is a different thing from
+      // who the ACCOUNT actually belongs to. Filtering by meeting-owner was
+      // both too strict (excluded genuine internal meetings the user attended
+      // but didn't "own" in HubSpot) and wrong for account-based cases (a
+      // meeting record can say "Joe" while the underlying contact is BDR-
+      // assigned to someone else entirely). Real filtering happens below,
+      // after matching each meeting to its contact.
+      const meetData = await hsPost(userId, "/crm/v3/objects/meetings/search", {
+        filterGroups: [{
+          filters: [
+            { propertyName: "hs_meeting_start_time", operator: "GTE", value: meetingWindowStart.toISOString() },
+            { propertyName: "hs_meeting_start_time", operator: "LTE", value: meetingWindowEnd.toISOString() },
+          ],
+        }],
+        properties: ["hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time", "hubspot_owner_id", "hs_attendee_owner_ids"],
+        limit: 100,
+      }).catch(() => ({ results: [] }));
 
-        const botCheck = detectBot({
-          filteredEvent: false, sentAt: null,
-          openedAt: eventType === "OPEN" ? ev.created : null,
-          numOpens: eventType === "OPEN" ? 1 : 0,
-          numClicks: eventType === "CLICK" ? 1 : 0,
-          replied: eventType === "REPLY",
-        });
-        if (botCheck.isBot && eventType === "OPEN") return null;
+      const hsMeetingsRaw = meetData.results || [];
+      // The Search API never returns an associations block (same confirmed
+      // HubSpot limitation already fixed elsewhere for deals) — the old
+      // `associations: ["contacts"]` param here was silently ignored, meaning
+      // every HubSpot-logged meeting lost its contact link and showed with no
+      // name/company attached. Real batch fetch instead.
+      const meetingContactAssoc = await batchFetchAssociations(userId, "meetings", "contacts", hsMeetingsRaw.map(m => m.id));
+      const meetingContactIds = [...new Set(Object.values(meetingContactAssoc).flat())];
 
-        return {
-          id: `rt-${ev.id || ev.created}`,
-          type: eventType,
-          timestamp: ev.created || null,
-          score, label, contactId, contact,
+      // ── Batch-fetch all contacts we need in one call (signals + meetings) ─
+      const allContactIds = [...new Set([...eventContactIds, ...meetingContactIds])];
+      const contactMap = {};
+      const contactsByEmail = {};
+      if (allContactIds.length > 0) {
+        try {
+          const batch = await hsPost(userId, "/crm/v3/objects/contacts/batch/read", {
+            properties: BASE_CONTACT_PROPS,
+            inputs: allContactIds.map(id => ({ id })),
+          });
+          (batch.results || []).forEach(c => {
+            const info = normalizeContact(c);
+            contactMap[c.id] = info;
+            if (info.email) contactsByEmail[info.email.toLowerCase()] = info;
+          });
+        } catch { /* enrichment best-effort, same as /signals/recent */ }
+      }
+
+      // ── Build signals in the exact shape rightNowQueue.js expects ────────
+      const signals = rawEvents
+        .map(ev => {
+          const contactId = ev.contactId ? String(ev.contactId) : null;
+          const contact = contactId ? (contactMap[contactId] || null) : null;
+          const eventType = ev.type;
+          let score = 0, label = "";
+          if (eventType === "REPLY") {
+            if (isAutomatedReply(ev.subject || null, null)) return null; // OOO or bounce, handled elsewhere (or not at all, for bounces)
+            score = 100; label = "Replied";
+          } else if (eventType === "CLICK") { score = 70; label = "Clicked link"; }
+          else if (eventType === "OPEN")   { score = 40; label = "Opened"; }
+
+          const botCheck = detectBot({
+            filteredEvent: false, sentAt: null,
+            openedAt: eventType === "OPEN" ? ev.created : null,
+            numOpens: eventType === "OPEN" ? 1 : 0,
+            numClicks: eventType === "CLICK" ? 1 : 0,
+            replied: eventType === "REPLY",
+          });
+          if (botCheck.isBot && eventType === "OPEN") return null;
+
+          return {
+            id: `rt-${ev.id || ev.created}`,
+            type: eventType,
+            timestamp: ev.created || null,
+            score, label, contactId, contact,
+          };
+        })
+        .filter(Boolean);
+
+      // ── Attach contactId to each HubSpot meeting from its association ────
+      const hsMeetings = hsMeetingsRaw.map(m => ({
+        ...m,
+        contactId: (meetingContactAssoc[m.id] || [])[0] || null,
+      }));
+      const hsMeetingMetaById = {};
+      hsMeetingsRaw.forEach(m => {
+        hsMeetingMetaById[m.id] = {
+          ownerId: m.properties?.hubspot_owner_id || null,
+          attendeeOwnerIds: String(m.properties?.hs_attendee_owner_ids || "").split(";").map(s => s.trim()).filter(Boolean),
         };
-      })
-      .filter(Boolean);
+      });
 
-    // ── Attach contactId to each HubSpot meeting from its association ────
-    const hsMeetings = hsMeetingsRaw.map(m => ({
-      ...m,
-      contactId: (meetingContactAssoc[m.id] || [])[0] || null,
-    }));
-    const hsMeetingMetaById = {};
-    hsMeetingsRaw.forEach(m => {
-      hsMeetingMetaById[m.id] = {
-        ownerId: m.properties?.hubspot_owner_id || null,
-        attendeeOwnerIds: String(m.properties?.hs_attendee_owner_ids || "").split(";").map(s => s.trim()).filter(Boolean),
-      };
-    });
+      // ── Outlook meetings, same window ────────────────────────────────────
+      const outlookEvents = await getOutlookCalendarEvents(userId, meetingWindowStart, meetingWindowEnd);
 
-    // ── Outlook meetings, same window ────────────────────────────────────
-    const outlookEvents = await getOutlookCalendarEvents(userId, meetingWindowStart, meetingWindowEnd);
-
-    // ── Outlook sent-email cross-reference ───────────────────────────────
-    // Some outreach goes out through Outlook directly rather than HubSpot's
-    // tracked send, which makes it invisible to HubSpot's own reply-awaiting
-    // detection above. This pulls Outlook's sent-items (already fetched and
-    // cached by outlook-emails.js) and flags anyone where the most recent
-    // Outlook send is newer than any reply HubSpot knows about — i.e., a
-    // real follow-up gap this app would otherwise miss entirely.
-    let outlookSignals = [];
-    try {
-      const outlookRes = await fetch(`${process.env.APP_URL}/api/outlook-emails?userId=${userId}&days=14`);
-      if (outlookRes.ok) {
-        const outlookData = await outlookRes.json();
-        if (outlookData.connected) {
-          for (const [email, sends] of Object.entries(outlookData.emails || {})) {
-            const contact = contactsByEmail[email.toLowerCase()];
-            if (!contact || !sends?.length) continue;
-            const lastSend = sends.reduce((a, b) => new Date(a.sentAt) > new Date(b.sentAt) ? a : b);
-            const lastKnownReply = contact.lastReplyDate ? new Date(contact.lastReplyDate) : null;
-            if (!lastKnownReply || new Date(lastSend.sentAt) > lastKnownReply) {
-              outlookSignals.push({
-                id: `outlook-sent-${contact.id}`,
-                contactId: contact.id,
-                contact,
-                subject: lastSend.subject,
-                sentAt: lastSend.sentAt,
-              });
+      // ── Outlook sent-email cross-reference ───────────────────────────────
+      // Some outreach goes out through Outlook directly rather than HubSpot's
+      // tracked send, which makes it invisible to HubSpot's own reply-awaiting
+      // detection above. This pulls Outlook's sent-items (already fetched and
+      // cached by outlook-emails.js) and flags anyone where the most recent
+      // Outlook send is newer than any reply HubSpot knows about — i.e., a
+      // real follow-up gap this app would otherwise miss entirely.
+      let outlookSignals = [];
+      try {
+        const outlookRes = await fetch(`${process.env.APP_URL}/api/outlook-emails?userId=${userId}&days=14`);
+        if (outlookRes.ok) {
+          const outlookData = await outlookRes.json();
+          if (outlookData.connected) {
+            for (const [email, sends] of Object.entries(outlookData.emails || {})) {
+              const contact = contactsByEmail[email.toLowerCase()];
+              if (!contact || !sends?.length) continue;
+              const lastSend = sends.reduce((a, b) => new Date(a.sentAt) > new Date(b.sentAt) ? a : b);
+              const lastKnownReply = contact.lastReplyDate ? new Date(contact.lastReplyDate) : null;
+              if (!lastKnownReply || new Date(lastSend.sentAt) > lastKnownReply) {
+                outlookSignals.push({
+                  id: `outlook-sent-${contact.id}`,
+                  contactId: contact.id,
+                  contact,
+                  subject: lastSend.subject,
+                  sentAt: lastSend.sentAt,
+                });
+              }
             }
           }
         }
-      }
-    } catch (e) { console.error("[right-now] Outlook cross-reference failed:", e.message); }
+      } catch (e) { console.error("[right-now] Outlook cross-reference failed:", e.message); }
 
-    // ── Merge, dedup, score ───────────────────────────────────────────────
-    const mergedMeetings = mergeMeetings(hsMeetings, outlookEvents, contactMap, contactsByEmail);
+      // ── Merge, dedup, score ───────────────────────────────────────────────
+      const mergedMeetings = mergeMeetings(hsMeetings, outlookEvents, contactMap, contactsByEmail);
 
-    // Filter to meetings the current user actually scheduled or attends.
-    // Deliberately NOT based on the matched contact's assigned_bdr/owner —
-    // that field describes who's nominally responsible for the account,
-    // which can be stale or simply not reflect who's really running a given
-    // relationship (a colleague can be genuinely driving an account even
-    // when a CRM field still lists someone else). Real participation is
-    // the honest signal: did I schedule this meeting, or am I listed as
-    // an attendee. Outlook events are trusted as-is — they only ever come
-    // from the current user's own calendar via their own OAuth token, so
-    // by definition they're already scoped to meetings involving them.
-    const myMeetings = mergedMeetings.filter(m => {
-      if (m.source !== "hubspot") return true;
-      const rawId = m.id.replace(/^hs-/, "");
-      const meta = hsMeetingMetaById[rawId];
-      if (!meta) return true; // no meta available — don't silently hide it
-      if (meetingOwnerId && String(meta.ownerId) === String(meetingOwnerId)) return true;
-      if (meetingOwnerId && meta.attendeeOwnerIds.includes(String(meetingOwnerId))) return true;
-      return false;
-    });
+      // Filter to meetings the current user actually scheduled or attends.
+      // Deliberately NOT based on the matched contact's assigned_bdr/owner —
+      // that field describes who's nominally responsible for the account,
+      // which can be stale or simply not reflect who's really running a given
+      // relationship (a colleague can be genuinely driving an account even
+      // when a CRM field still lists someone else). Real participation is
+      // the honest signal: did I schedule this meeting, or am I listed as
+      // an attendee. Outlook events are trusted as-is — they only ever come
+      // from the current user's own calendar via their own OAuth token, so
+      // by definition they're already scoped to meetings involving them.
+      myMeetings = mergedMeetings.filter(m => {
+        if (m.source !== "hubspot") return true;
+        const rawId = m.id.replace(/^hs-/, "");
+        const meta = hsMeetingMetaById[rawId];
+        if (!meta) return true; // no meta available — don't silently hide it
+        if (meetingOwnerId && String(meta.ownerId) === String(meetingOwnerId)) return true;
+        if (meetingOwnerId && meta.attendeeOwnerIds.includes(String(meetingOwnerId))) return true;
+        return false;
+      });
+    } catch (err) {
+      console.error("[right-now] Meetings section failed, continuing without meetings:", err.message);
+      myMeetings = [];
+    }
 
     // ── Sequence state — sequences are now the primary outreach channel,
     // so a sequence quietly ending with no next step decided is a real gap.
     // Bounded to the first 30 currently-enrolled contacts per run to keep
     // the per-contact enrollment lookups (unavoidably one call each) bounded.
-    const enrolledContacts = (taskData.upcomingSequences || []).slice(0, 30);
-    const enrollmentResults = await Promise.all(
-      enrolledContacts.map(c => fetchSequenceEnrollments(userId, c.contactId).catch(() => []))
-    );
-    const confirmedSequenceIds = await getConfirmedSequenceIds(userId);
-    for (let i = 0; i < enrollmentResults.length; i++) {
-      const contact = enrolledContacts[i];
-      for (const enr of enrollmentResults[i]) {
-        if (enr.state === "FINISHED" && !confirmedSequenceIds.has(enr.id)) {
-          await addTodo(userId, {
-            contactId: contact.contactId,
-            text: `Sequence "${enr.subject}" ended for ${contact.contact?.name || "contact"} — decide next step`,
-            autoDetected: true,
-            priority: "HIGH",
-            createdAt: new Date().toISOString(),
-          });
-          await addConfirmedSequenceId(userId, enr.id, confirmedSequenceIds);
-          confirmedSequenceIds.add(enr.id);
+    // Wrapped defensively, same reasoning as the meetings section above —
+    // this is a side feature, not core queue data, and must never be able
+    // to take the whole thing down.
+    try {
+      const enrolledContacts = (taskData.upcomingSequences || []).slice(0, 30);
+      const enrollmentResults = await Promise.all(
+        enrolledContacts.map(c => fetchSequenceEnrollments(userId, c.contactId).catch(() => []))
+      );
+      const confirmedSequenceIds = await getConfirmedSequenceIds(userId);
+      for (let i = 0; i < enrollmentResults.length; i++) {
+        const contact = enrolledContacts[i];
+        for (const enr of enrollmentResults[i]) {
+          if (enr.state === "FINISHED" && !confirmedSequenceIds.has(enr.id)) {
+            await addTodo(userId, {
+              contactId: contact.contactId,
+              text: `Sequence "${enr.subject}" ended for ${contact.contact?.name || "contact"} — decide next step`,
+              autoDetected: true,
+              priority: "HIGH",
+              createdAt: new Date().toISOString(),
+            });
+            await addConfirmedSequenceId(userId, enr.id, confirmedSequenceIds);
+            confirmedSequenceIds.add(enr.id);
+          }
         }
       }
+    } catch (err) {
+      console.error("[right-now] Sequence-state section failed, continuing:", err.message);
     }
 
     // ── Confirmation to-do: fire once per meeting, 3 days out ────────────
@@ -1851,41 +1870,45 @@ export async function computeRightNowQueue(userId, qp = {}) {
     // batch fetch for each contact's most recent sequence enrollment.
     const queueContactIds = [...new Set(queue.map(item => item.contactId).filter(Boolean))];
     if (queueContactIds.length > 0) {
-      const contactCompanyAssoc = await batchFetchAssociations(userId, "contacts", "companies", queueContactIds);
-      const allCompanyIds = [...new Set(Object.values(contactCompanyAssoc).flat())];
-      const companyNamesById = {};
-      if (allCompanyIds.length > 0) {
-        for (let i = 0; i < allCompanyIds.length; i += 100) {
-          const chunk = allCompanyIds.slice(i, i + 100);
-          const batch = await hsPost(userId, "/crm/v3/objects/companies/batch/read", {
-            inputs: chunk.map(id => ({ id })),
-            properties: ["name"],
-          }).catch(() => ({ results: [] }));
-          (batch.results || []).forEach(c => { companyNamesById[c.id] = c.properties?.name || null; });
+      try {
+        const contactCompanyAssoc = await batchFetchAssociations(userId, "contacts", "companies", queueContactIds);
+        const allCompanyIds = [...new Set(Object.values(contactCompanyAssoc).flat())];
+        const companyNamesById = {};
+        if (allCompanyIds.length > 0) {
+          for (let i = 0; i < allCompanyIds.length; i += 100) {
+            const chunk = allCompanyIds.slice(i, i + 100);
+            const batch = await hsPost(userId, "/crm/v3/objects/companies/batch/read", {
+              inputs: chunk.map(id => ({ id })),
+              properties: ["name"],
+            }).catch(() => ({ results: [] }));
+            (batch.results || []).forEach(c => { companyNamesById[c.id] = c.properties?.name || null; });
+          }
         }
+
+        // Live owner lookup (not a hardcoded rep list) so this doesn't need
+        // manual updates when new BDRs join — one call, cheap, already the
+        // same pattern used elsewhere in this file.
+        const ownersData = await hsGet(userId, "/crm/v3/owners", { limit: 100 }).catch(() => ({ results: [] }));
+        const ownerNamesById = {};
+        (ownersData.results || []).forEach(o => {
+          ownerNamesById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
+        });
+
+        queue.forEach(item => {
+          if (!item.contactId || !item.contact) return;
+          const companyId = (contactCompanyAssoc[item.contactId] || [])[0] || null;
+          item.contact = {
+            ...item.contact,
+            companyId,
+            companyName: companyId ? (companyNamesById[companyId] || item.contact.company) : (item.contact.company || null),
+            contactUrl: `https://app.hubspot.com/contacts/39921549/record/0-1/${item.contactId}`,
+            companyUrl: companyId ? `https://app.hubspot.com/contacts/39921549/record/0-2/${companyId}` : null,
+            ownerName: item.contact.ownerId ? (ownerNamesById[String(item.contact.ownerId)] || null) : null,
+          };
+        });
+      } catch (err) {
+        console.error("[right-now] Contact/company enrichment failed, continuing with unenriched contacts:", err.message);
       }
-
-      // Live owner lookup (not a hardcoded rep list) so this doesn't need
-      // manual updates when new BDRs join — one call, cheap, already the
-      // same pattern used elsewhere in this file.
-      const ownersData = await hsGet(userId, "/crm/v3/owners", { limit: 100 }).catch(() => ({ results: [] }));
-      const ownerNamesById = {};
-      (ownersData.results || []).forEach(o => {
-        ownerNamesById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
-      });
-
-      queue.forEach(item => {
-        if (!item.contactId || !item.contact) return;
-        const companyId = (contactCompanyAssoc[item.contactId] || [])[0] || null;
-        item.contact = {
-          ...item.contact,
-          companyId,
-          companyName: companyId ? (companyNamesById[companyId] || item.contact.company) : (item.contact.company || null),
-          contactUrl: `https://app.hubspot.com/contacts/39921549/record/0-1/${item.contactId}`,
-          companyUrl: companyId ? `https://app.hubspot.com/contacts/39921549/record/0-2/${companyId}` : null,
-          ownerName: item.contact.ownerId ? (ownerNamesById[String(item.contact.ownerId)] || null) : null,
-        };
-      });
     }
 
     return queue;
