@@ -386,6 +386,20 @@ export default function RightNowView({ getToken, user }) {
     }
   }
 
+  const [regenerating, setRegenerating] = useState(false)
+  const regenerateTop5 = async () => {
+    setRegenerating(true)
+    try {
+      const data = await apiFetch('/api/hubspot/top5/regenerate', getToken, { method: 'POST' })
+      setTop5Picks(data.picks || [])
+      showToast('Top 5 refreshed')
+    } catch (e) {
+      setError(`Couldn't refresh Top 5: ${e.message}`)
+    } finally {
+      setRegenerating(false)
+    }
+  }
+
   const addTask = async () => {
     const text = addText.trim()
     if (!text) return
@@ -639,6 +653,12 @@ export default function RightNowView({ getToken, user }) {
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                   <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px', color: 'var(--accent)' }}>TOP 5 RIGHT NOW</span>
+                  {!viewingUserId && (
+                    <button onClick={regenerateTop5} disabled={regenerating}
+                      style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--accent-text)', background: 'none', border: 'none', cursor: regenerating ? 'default' : 'pointer', padding: 0 }}>
+                      {regenerating ? 'Refreshing…' : 'Refresh Top 5 now'}
+                    </button>
+                  )}
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 22 }}>
                   {top5Combined.map((item, idx) => {
