@@ -323,6 +323,8 @@ export default function PipelineReviewView({ getToken }) {
       return next
     })
   }
+  const collapseAllStages = () => setCollapsedStages(new Set(sections.map(s => s.key)))
+  const expandAllStages = () => setCollapsedStages(new Set())
 
   const clearFilters = () => {
     setMinAmount(''); setMaxAmount(''); setCloseBefore(''); setCloseAfter(''); setStaleOnly(false)
@@ -592,6 +594,17 @@ export default function PipelineReviewView({ getToken }) {
           <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>Loading deals…</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {sections.length > 1 && (
+              <div style={{ display: 'flex', gap: 10, marginBottom: -4 }}>
+                <button onClick={collapseAllStages} style={{ fontSize: 11.5, color: 'var(--accent-text)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                  Hide all
+                </button>
+                <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>·</span>
+                <button onClick={expandAllStages} style={{ fontSize: 11.5, color: 'var(--accent-text)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                  Show all
+                </button>
+              </div>
+            )}
             {sections.map(section => {
               const isCollapsed = collapsedStages.has(section.key)
               return (
