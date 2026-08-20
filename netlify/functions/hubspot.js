@@ -7264,14 +7264,28 @@ export const handler = async (event, context) => {
         ];
         if (qp.ownerId) filters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: qp.ownerId });
 
-        const dealsData = await hsPost(user.userId, "/crm/v3/objects/deals/search", {
-          filterGroups: [{ filters }],
-          properties: DEAL_SEARCH_PROPERTIES,
-          sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
-          limit: 200,
-        }).catch(() => ({ results: [] }));
+        // Paginate through ALL open deals rather than capping at one page of
+        // 200 sorted by last-modified. That cap was the actual bug behind
+        // "near-term deals missing" — a stalled deal that hasn't been
+        // touched recently but has an urgent close date would never even
+        // be fetched, so no client-side sort could ever surface it. Capped
+        // at 1000 total as a sane safety limit, well above any real
+        // pipeline's open-deal count.
+        let deals = [];
+        let after = undefined;
+        for (let page = 0; page < 5; page++) {
+          const pageData = await hsPost(user.userId, "/crm/v3/objects/deals/search", {
+            filterGroups: [{ filters }],
+            properties: DEAL_SEARCH_PROPERTIES,
+            sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
+            limit: 200,
+            ...(after ? { after } : {}),
+          }).catch(() => ({ results: [] }));
+          deals = deals.concat(pageData.results || []);
+          after = pageData.paging?.next?.after;
+          if (!after) break;
+        }
 
-        const deals = dealsData.results || [];
         const dealIds = deals.map(d => d.id);
 
         const [companyAssoc, contactAssoc] = await Promise.all([
