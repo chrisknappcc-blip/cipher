@@ -1552,8 +1552,33 @@ async function computeTaskQueue(user, qp) {
 }
 
 export async function computeRightNowQueue(userId, qp = {}) {
+    // ── Resolve whose queue this actually is, in HubSpot rep terms ────────
+    // This is the real fix for a significant gap: computeTaskQueue only
+    // filters by assigned_bdr/owner_id when the CALLER explicitly passes
+    // those as query params — it never derived them from userId itself.
+    // The live /right-now endpoint just forwarded whatever query string
+    // came in (which never included these params from the frontend), and
+    // /team/queue passed an empty qp entirely. The practical effect: every
+    // person's "Right Now Queue" was actually showing portal-wide activity
+    // and tasks, not their own — it looked fine for a single user testing
+    // solo, but fell apart the moment a second person's queue was compared
+    // against it, since both were really showing the same unfiltered data.
+    let myOwnerId = null;
+    let myRepName = null;
+    try {
+      const meData = await hsGet(userId, "/crm/v3/owners/me", {});
+      myOwnerId = meData?.id || null;
+      myRepName = meData ? `${meData.firstName || ""} ${meData.lastName || ""}`.trim() : null;
+    } catch { /* proceed unscoped if this fails — better than a hard crash */ }
+
+    const scopedQp = {
+      ...qp,
+      assigned_bdr: qp.assigned_bdr || myRepName || undefined,
+      owner_id: qp.owner_id || myOwnerId || undefined,
+    };
+
     // ── Everything /tasks already knows how to compute ───────────────────
-    const taskData = await computeTaskQueue({ userId }, qp);
+    const taskData = await computeTaskQueue({ userId }, scopedQp);
 
     // repliesAwaitingResponse already carries replyDate + contactId —
     // reshape into the exact signal shape scoreSignalForQueue expects so
@@ -1625,18 +1650,11 @@ export async function computeRightNowQueue(userId, qp = {}) {
       const meetingWindowStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
       const meetingWindowEnd   = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
-      // Scope to the current user's own meetings — this query previously had
-      // no owner filter at all, confirmed by testing it directly: with zero
-      // filters it returns every meeting in the entire portal (2,858 results),
-      // meaning Today's Meetings was showing everyone's meetings, not just
-      // the logged-in rep's own calendar.
-      let meetingOwnerId = null;
-      let currentUserName = null;
-      try {
-        const meData = await hsGet(userId, "/crm/v3/owners/me", {});
-        meetingOwnerId = meData?.id || null;
-        currentUserName = meData ? `${meData.firstName || ""} ${meData.lastName || ""}`.trim() : null;
-      } catch { /* fall through without owner scoping if this fails */ }
+      // Scope to the current user's own meetings. Reuses myOwnerId/myRepName
+      // resolved once at the top of the function, instead of fetching
+      // /owners/me a second time here.
+      const meetingOwnerId = myOwnerId;
+      const currentUserName = myRepName;
 
       // No owner filter here anymore — a meeting RECORD's own owner (often
       // whoever created/synced the calendar entry) is a different thing from
@@ -1713,7 +1731,24 @@ export async function computeRightNowQueue(userId, qp = {}) {
             score, label, contactId, contact,
           };
         })
-        .filter(Boolean);
+        .filter(Boolean)
+        // This is the fix: signals had NO owner scoping at all before —
+        // every rep's Right Now Queue was showing portal-wide activity
+        // regardless of whose contacts they actually were. Keep only
+        // signals for contacts that are actually this user's own (assigned
+        // BDR, Primary Outreach Rep, or account owner). A signal whose
+        // contact couldn't be matched to anyone is dropped rather than
+        // shown — better to miss a rare edge case than leak someone
+        // else's activity into the wrong person's queue.
+        .filter(s => {
+          const c = s.contact;
+          if (!c) return false;
+          return (
+            (currentUserName && c.assignedBdr === currentUserName) ||
+            (currentUserName && c.primaryOutreachRep === currentUserName) ||
+            (meetingOwnerId && String(c.ownerId) === String(meetingOwnerId))
+          );
+        });
 
       // ── Attach contactId to each HubSpot meeting from its association ────
       const hsMeetings = hsMeetingsRaw.map(m => ({
@@ -1834,6 +1869,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
       meetings: myMeetings.map(m => ({
         id: m.id,
         startTime: m.startTime,
+        endTime: m.endTime,
         contactId: m.contactId,
         contact: m.contact,
         subject: m.subject,
