@@ -518,14 +518,13 @@ export default function PipelineReviewView({ getToken }) {
           <span style={{ marginLeft: 'auto' }}>
             {deals.filter(d => discussedIds.has(d.id)).length} of {deals.length} discussed
           </span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
-            <input type="checkbox" checked={focusOnly} onChange={e => setFocusOnly(e.target.checked)} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5 }}>
+            <input type="checkbox" checked={focusOnly} onChange={e => setFocusOnly(e.target.checked)} style={{ width: 15, height: 15 }} />
             Focus deals only
           </label>
-          <button onClick={resetMeeting} style={{ color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11.5, padding: 0, textDecoration: 'underline' }}>
-            New meeting
-          </button>
         </div>
+
+        {/* "New meeting" (resets discussed-tracking) hidden for now — not needed at this time. Handler (resetMeeting) still intact below if this comes back. */}
 
         {!presentationMode && (
         <>
