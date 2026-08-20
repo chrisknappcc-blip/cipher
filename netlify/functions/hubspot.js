@@ -1978,6 +1978,37 @@ export async function computeRightNowQueue(userId, qp = {}) {
 // costing every single page load up to 60 API calls. Self-contained: pulls
 // its own upcomingSequences via computeTaskQueue rather than requiring the
 // caller to already have it.
+// Shared with top5-scheduler.js and the on-demand POST /top5/regenerate
+// endpoint below — moved here so there's one implementation, not two
+// copies that could drift apart.
+export async function rankTop5WithClaude(candidates) {
+  const prompt = `You are helping a B2B sales rep decide what to work on right now. Below are their highest-scoring queue items (contact, company, why it's flagged, and a formula-based score). Pick the true top 5 most important items to work RIGHT NOW, considering things the raw score might miss — deal size or stage, relationship risk, how multiple weaker signals might combine, or an account about to go cold. Respond with ONLY a JSON array, no other text, in this exact shape:
+[{"id": "the item's id field", "rank": 1, "rationale": "one sentence, under 20 words, explaining why this ranks here"}]
+
+Candidates:
+${JSON.stringify(candidates.map(c => ({ id: c.id, name: c.contact?.name, company: c.contact?.company, whyTag: c.whyTag, score: c.queueScore })), null, 2)}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 800,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Claude API error: ${res.status}`);
+  const data = await res.json();
+  const text = (data.content || []).map(b => b.text || "").join("").trim();
+  const cleaned = text.replace(/^```json\s*|\s*```$/g, "");
+  return JSON.parse(cleaned);
+}
+
 export async function checkSequenceCompletions(userId) {
   try {
     const taskData = await computeTaskQueue({ userId }, {});
@@ -6908,6 +6939,44 @@ export const handler = async (event, context) => {
         return ok(data);
       } catch (err) {
         return ok({ picks: [], generatedAt: null, error: err.message });
+      }
+    }
+
+    // POST /top5/regenerate — on-demand refresh, bypassing the hourly
+    // cache. Same ranking logic the scheduler uses, just triggered by a
+    // person instead of the clock. Useful for verifying a fix actually
+    // worked right now instead of waiting up to an hour for the next
+    // scheduled run to overwrite the cached picks.
+    if (method === "POST" && path === "/top5/regenerate") {
+      try {
+        const queue = await computeRightNowQueue(user.userId, {});
+
+        let pinnedIds = new Set();
+        if (AZURE_ACCOUNT && AZURE_SAS_TOKEN) {
+          const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+          const pinnedUrl = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pinned-${user.userId}.json${sas}`;
+          const pinnedRes = await fetch(pinnedUrl).catch(() => null);
+          if (pinnedRes?.ok) {
+            const pinnedData = await pinnedRes.json();
+            pinnedIds = new Set(pinnedData.pinnedIds || []);
+          }
+        }
+
+        const candidates = queue.filter(item => !pinnedIds.has(item.id)).slice(0, 20);
+        const picks = candidates.length > 0 ? await rankTop5WithClaude(candidates) : [];
+        const body = { picks, generatedAt: new Date().toISOString(), slot: "manual" };
+
+        if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok(body);
+        const sas = AZURE_SAS_TOKEN.startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+        const url = `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/top5-${user.userId}.json${sas}`;
+        await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-ms-blob-type": "BlockBlob" },
+          body: JSON.stringify(body),
+        });
+        return ok(body);
+      } catch (err) {
+        return error(500, `Top 5 regenerate error: ${err.message}`);
       }
     }
 

@@ -12,7 +12,7 @@
 // cache — this is the only place that ever calls the AI model for this
 // feature, so cost stays fixed at the scheduled cadence, not per page load.
 
-import { computeRightNowQueue, getActiveUserIds, checkSequenceCompletions } from "./hubspot.js";
+import { computeRightNowQueue, getActiveUserIds, checkSequenceCompletions, rankTop5WithClaude } from "./hubspot.js";
 
 const AZURE_ACCOUNT   = process.env.AZURE_STORAGE_ACCOUNT_NAME;
 const AZURE_SAS_TOKEN = process.env.AZURE_STORAGE_SAS_TOKEN;
@@ -66,34 +66,6 @@ async function alreadyRan(userId, dateKey, slot) {
 }
 async function markRan(userId, dateKey, slot) {
   await writeJson(`top5-lastrun-${userId}.json`, { dateKey, slot, ranAt: new Date().toISOString() });
-}
-
-async function rankTop5WithClaude(candidates) {
-  const prompt = `You are helping a B2B sales rep decide what to work on right now. Below are their highest-scoring queue items (contact, company, why it's flagged, and a formula-based score). Pick the true top 5 most important items to work RIGHT NOW, considering things the raw score might miss — deal size or stage, relationship risk, how multiple weaker signals might combine, or an account about to go cold. Respond with ONLY a JSON array, no other text, in this exact shape:
-[{"id": "the item's id field", "rank": 1, "rationale": "one sentence, under 20 words, explaining why this ranks here"}]
-
-Candidates:
-${JSON.stringify(candidates.map(c => ({ id: c.id, name: c.contact?.name, company: c.contact?.company, whyTag: c.whyTag, score: c.queueScore })), null, 2)}`;
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 800,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-
-  if (!res.ok) throw new Error(`Claude API error: ${res.status}`);
-  const data = await res.json();
-  const text = (data.content || []).map(b => b.text || "").join("").trim();
-  const cleaned = text.replace(/^```json\s*|\s*```$/g, "");
-  return JSON.parse(cleaned);
 }
 
 export default async () => {
