@@ -1460,6 +1460,15 @@ async function computeTaskQueue(user, qp) {
         };
       })
       .filter(Boolean)
+      // Same interim precedence rule as Section 3 below: buildFilterGroups
+      // ORs assigned_bdr with hubspot_owner_id, so a contact BDR'd to
+      // someone else but owned by the current user would still match via
+      // the owner branch. When assigned_bdr is set, it's authoritative.
+      .filter(c => {
+        if (assignedBdrList.length === 0) return true;
+        const bdr = c.contact?.assignedBdr;
+        return !bdr || assignedBdrList.includes(bdr);
+      })
       .sort((a, b) => new Date(b.replyDate) - new Date(a.replyDate));
 
     // ── Section 2: Upcoming sequences (currently enrolled) ────────────────
@@ -1507,6 +1516,11 @@ async function computeTaskQueue(user, qp) {
         lastEmailName:    p.hs_email_last_email_name         || null,
         url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
       };
+    })
+    .filter(c => {
+      if (assignedBdrList.length === 0) return true;
+      const bdr = c.contact?.assignedBdr;
+      return !bdr || assignedBdrList.includes(bdr);
     });
 
     // ── Section 3: Due tasks (HubSpot tasks with date window) ─────────────
@@ -1605,7 +1619,22 @@ async function computeTaskQueue(user, qp) {
     const dueTasks = [
       ...(overdueTasksData.results  || []).map(t => normalizeTask(t, true)),
       ...(upcomingTasksData.results || []).map(t => normalizeTask(t, false)),
-    ];
+    ]
+      // The task query above only filters by hubspot_owner_id — it never
+      // checks assigned_bdr at all. That's too permissive: an AE can be
+      // the nominal account owner on a contact a BDR is actively working,
+      // and this would pull that BDR's tasks into the AE's queue just
+      // because of the ownership link. Interim rule until
+      // primary_outreach_rep is live: when a contact HAS an assigned_bdr
+      // value, that value is authoritative for whose task this is — an
+      // owner-only match doesn't override it. A contact with no
+      // assigned_bdr at all still matches on ownership alone, same as
+      // before (covers inbound/direct-AE contacts with no BDR involved).
+      .filter(t => {
+        if (!repName) return true; // no rep scoping requested — leave as-is
+        const bdr = t.contact?.assignedBdr;
+        return !bdr || bdr === repName;
+      });
 
     return {
       repliesAwaitingResponse,
@@ -7200,6 +7229,12 @@ export const handler = async (event, context) => {
         if (!visibility.all && !isAdminUser(user)) {
           profiles = profiles.filter(p => visibility.emails.has((p.email || "").toLowerCase()));
         }
+        // Exclude yourself — you're already "(me)" in the switcher, showing
+        // up a second time as your own literal email is just confusing,
+        // and worse, selecting it puts the app into read-only mode against
+        // your own account since viewingUserId being non-null is what
+        // triggers that, regardless of whose id it actually is.
+        profiles = profiles.filter(p => (p.email || "").toLowerCase() !== (user.email || "").toLowerCase());
         const roster = await Promise.all(profiles.map(async (p) => {
           try {
             const queue = await computeRightNowQueue(p.userId, {});
