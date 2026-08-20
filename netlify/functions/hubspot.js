@@ -1513,10 +1513,8 @@ async function computeTaskQueue(user, qp) {
     // Look up the current user's HubSpot owner ID for task filtering
     let ownerIdForTasks = user.ownerId || null;
     if (!ownerIdForTasks) {
-      try {
-        const meData = await hsGet(user.userId, "/crm/v3/owners/me", {});
-        ownerIdForTasks = meData?.id || null;
-      } catch { /* use null */ }
+      const me = await getMyHubSpotOwner(user.userId, user.email);
+      ownerIdForTasks = me.id || null;
     }
 
     // If assigned_bdr filter is set, also look up that rep's owner ID
@@ -1640,19 +1638,26 @@ export async function computeRightNowQueue(userId, qp = {}) {
     // and tasks, not their own — it looked fine for a single user testing
     // solo, but fell apart the moment a second person's queue was compared
     // against it, since both were really showing the same unfiltered data.
-    let myOwnerId = null;
-    let myRepName = null;
-    try {
-      const meData = await hsGet(userId, "/crm/v3/owners/me", {});
-      myOwnerId = meData?.id || null;
-      myRepName = meData ? `${meData.firstName || ""} ${meData.lastName || ""}`.trim() : null;
-    } catch { /* proceed unscoped if this fails — better than a hard crash */ }
+    const myOwner = await getMyHubSpotOwner(userId, null);
+    const myOwnerId = myOwner.id;
+    const myRepName = myOwner.id ? `${myOwner.firstName || ""} ${myOwner.lastName || ""}`.trim() : null;
 
     const scopedQp = {
       ...qp,
       assigned_bdr: qp.assigned_bdr || myRepName || undefined,
       owner_id: qp.owner_id || myOwnerId || undefined,
     };
+
+    // Hard safety net: if identity resolution failed AND the caller didn't
+    // explicitly supply their own scoping (qp.assigned_bdr/owner_id), do
+    // NOT proceed with what would be an unscoped, portal-wide query. This
+    // exact silent-fallthrough is what caused contacts belonging to other
+    // reps to leak into someone else's queue. Failing to an empty queue is
+    // safe; failing open to everyone's data is not.
+    if (!scopedQp.assigned_bdr && !scopedQp.owner_id) {
+      console.error(`[right-now] Could not resolve HubSpot identity for userId=${userId} — returning empty queue instead of an unscoped one.`);
+      return [];
+    }
 
     // ── Everything /tasks already knows how to compute ───────────────────
     const taskData = await computeTaskQueue({ userId }, scopedQp);
@@ -2071,6 +2076,35 @@ export async function checkSequenceCompletions(userId) {
     }
   } catch (err) {
     console.error("[checkSequenceCompletions] failed:", err.message);
+  }
+}
+
+// Reliable replacement for /crm/v3/owners/me, which returns a hard 400
+// ("Unable to parse value for path parameter: ownerId") on this portal's
+// token — confirmed via direct testing, not a guess. Every place that used
+// to call /owners/me was silently failing (caught by a try/catch, leaving
+// the resolved identity as null), which meant every rep-scoping check
+// built on top of it was never actually being applied. Matches by email
+// against the full owners list (a working endpoint) instead. email is
+// optional — when the caller only has a plain userId (e.g. inside
+// computeTaskQueue/computeRightNowQueue, which don't carry the full user
+// object), this falls back to the active-user registry.
+async function getMyHubSpotOwner(cipherUserId, cipherEmail) {
+  const empty = { id: null, firstName: null, lastName: null, email: null };
+  let email = cipherEmail || null;
+  if (!email) {
+    try {
+      const profiles = await getActiveUserProfiles();
+      email = profiles.find(p => p.userId === cipherUserId)?.email || null;
+    } catch { /* leave email null */ }
+  }
+  if (!email) return empty;
+  try {
+    const ownersData = await hsGet(cipherUserId, "/crm/v3/owners", { limit: 100 });
+    const match = (ownersData.results || []).find(o => (o.email || "").toLowerCase() === email.toLowerCase());
+    return match || empty;
+  } catch {
+    return empty;
   }
 }
 
@@ -3022,7 +3056,7 @@ export const handler = async (event, context) => {
         if (includeOwned) {
           try {
             // Look up the current user's HubSpot owner ID
-            const meData = await hsGet(user.userId, "/crm/v3/owners/me", {}).catch(() => null);
+            const meData = await getMyHubSpotOwner(user.userId, user.email);
             if (meData?.id) {
               const [oSent, oReplies, oClicks, oOpens] = await Promise.all([
                 countByOwnerId("hs_email_last_send_date",     meData.id),
@@ -4088,11 +4122,8 @@ export const handler = async (event, context) => {
         const body = JSON.parse(event.body || "{}");
         if (!body.text?.trim()) return error(400, "text is required");
         // Get current user's name for rep field
-        let repName = "";
-        try {
-          const me = await hsGet(user.userId, "/crm/v3/owners/me", {});
-          repName = `${me.firstName||""} ${me.lastName||""}`.trim();
-        } catch { /* use empty */ }
+        const me = await getMyHubSpotOwner(user.userId, user.email);
+        const repName = `${me.firstName||""} ${me.lastName||""}`.trim();
         const entry = await addActivityEntry(user.userId, body, repName);
         return ok({ entry });
       } catch (err) {
@@ -4191,9 +4222,12 @@ export const handler = async (event, context) => {
         };
         let currentOwnerIds  = [];
         let currentOwnerName = null;
-        // Primary: try HubSpot API
+        // Primary: reliable owner lookup (was /crm/v3/owners/me, which
+        // returns a hard 400 on this portal's token — confirmed, not a
+        // guess. This endpoint already had a hardcoded fallback map below
+        // for exactly this reason; that stays as extra redundancy.)
         try {
-          const me = await hsGet(user.userId, "/crm/v3/owners/me", {});
+          const me = await getMyHubSpotOwner(user.userId, user.email);
           if (me?.id) {
             currentOwnerIds  = [String(me.id)];
             currentOwnerName = `${me.firstName||""} ${me.lastName||""}`.trim() || null;
@@ -7605,25 +7639,28 @@ export const handler = async (event, context) => {
       }
     }
 
-    // TEMPORARY diagnostic — GET /whoami. Directly checks what
-    // /crm/v3/owners/me resolves to for the current session, to settle
-    // whether cross-user leakage in the queue is caused by identity
-    // resolution returning the wrong (or a shared) owner rather than a
-    // filter-logic bug. Safe to remove once the Michael Strong issue is
-    // resolved — this doesn't touch any real functionality.
+    // TEMPORARY diagnostic — GET /whoami. Confirmed: /crm/v3/owners/me
+    // returns a hard 400 on this portal's token ("Unable to parse value
+    // for path parameter: ownerId") — that's the root cause of cross-user
+    // leakage in the queue, not a filter-logic bug. Shows both the broken
+    // endpoint's raw behavior and the new reliable (email-match) method's
+    // result, so this stays useful for confirming the fix actually works.
+    // Safe to remove once confirmed working.
     if (method === "GET" && path === "/whoami") {
+      let brokenEndpointResult = null;
       try {
         const meData = await hsGet(user.userId, "/crm/v3/owners/me", {});
-        return ok({
-          cipherUserId: user.userId,
-          cipherEmail: user.email || null,
-          hubspotOwnerId: meData?.id || null,
-          hubspotName: meData ? `${meData.firstName || ""} ${meData.lastName || ""}`.trim() : null,
-          hubspotEmail: meData?.email || null,
-        });
+        brokenEndpointResult = { ok: true, data: meData };
       } catch (err) {
-        return error(500, `Whoami error: ${err.message}`);
+        brokenEndpointResult = { ok: false, error: err.message };
       }
+      const reliable = await getMyHubSpotOwner(user.userId, user.email);
+      return ok({
+        cipherUserId: user.userId,
+        cipherEmail: user.email || null,
+        ownersMeEndpoint: brokenEndpointResult,
+        reliableMethod: reliable,
+      });
     }
 
     return error(404, "Route not found");
