@@ -1229,6 +1229,16 @@ async function computeTaskQueue(user, qp) {
     const replyContactIds = (repliesData.results || []).map(c => c.id);
     let oooContactIds = new Set();
     let oooContactEmailDataFinal = {};
+    // Contacts where an ACTUAL incoming email record exists in the window —
+    // used to verify hs_sales_email_last_replied / hs_email_last_reply_date
+    // before trusting them. These are HubSpot's own auto-computed contact
+    // properties, and they can go stale or simply be wrong (a merged
+    // contact inheriting an old value, a sync glitch, etc.) — trusting them
+    // with zero corroboration means the queue can confidently show "replied
+    // 74h ago" for a contact with no actual reply anywhere in their real
+    // email history. This is populated below from a search that already
+    // has to run anyway for OOO detection, so it's not an extra API call.
+    let verifiedReplyContactIds = null;
     if (replyContactIds.length > 0) {
       try {
         // Search for INCOMING_EMAIL engagements for these contacts with OOO-like subjects
@@ -1244,6 +1254,29 @@ async function computeTaskQueue(user, qp) {
           sorts: [{ propertyName: "hs_timestamp", direction: "DESCENDING" }],
           limit: 200,
         }).catch(() => ({ results: [] }));
+
+        // Verify reply claims: which contacts actually HAVE a real incoming
+        // email in this window at all, regardless of OOO status. If a
+        // contact's property says "replied" but no incoming email record
+        // exists for them anywhere in the search results, that property is
+        // not corroborated by anything retrievable — it shouldn't be
+        // trusted at face value.
+        try {
+          const allIncomingIds = (incomingEmails.results || []).map(e => e.id);
+          if (allIncomingIds.length > 0) {
+            const allAssocData = await hsPost(user.userId, "/crm/v4/associations/emails/contacts/batch/read", {
+              inputs: allIncomingIds.slice(0, 100).map(id => ({ id })),
+            }).catch(() => ({ results: [] }));
+            verifiedReplyContactIds = new Set();
+            for (const r of (allAssocData.results || [])) {
+              for (const assoc of (r.to || [])) {
+                verifiedReplyContactIds.add(String(assoc.toObjectId));
+              }
+            }
+          } else {
+            verifiedReplyContactIds = new Set();
+          }
+        } catch { /* leave verifiedReplyContactIds null — skip verification rather than wrongly exclude everyone */ }
 
         // For contacts that ONLY have OOO replies (no real replies), mark as OOO
         // We do this by checking if subject starts with an OOO pattern
@@ -1347,6 +1380,14 @@ async function computeTaskQueue(user, qp) {
 
         // Filter out contacts that only have OOO/auto-reply emails
         if (oooContactIds.has(String(c.id))) return null;
+
+        // Filter out reply claims with no corroborating email record at
+        // all. hs_sales_email_last_replied / hs_email_last_reply_date are
+        // HubSpot's own auto-computed properties, and they can genuinely
+        // go stale or wrong (e.g. after a contact merge) — if the property
+        // says "replied" but no incoming email exists anywhere in the
+        // window, that's not a real signal to act on.
+        if (verifiedReplyContactIds !== null && !verifiedReplyContactIds.has(String(c.id))) return null;
 
         // Check if YOU manually responded after the reply
         const lastManualActivityTs = Math.max(
