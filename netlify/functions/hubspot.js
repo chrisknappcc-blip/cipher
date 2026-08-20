@@ -1239,6 +1239,7 @@ async function computeTaskQueue(user, qp) {
     // email history. This is populated below from a search that already
     // has to run anyway for OOO detection, so it's not an extra API call.
     let verifiedReplyContactIds = null;
+    let realReplyByContact = {};
     if (replyContactIds.length > 0) {
       try {
         // Search for INCOMING_EMAIL engagements for these contacts with OOO-like subjects
@@ -1323,23 +1324,43 @@ async function computeTaskQueue(user, qp) {
                 { propertyName: "hs_timestamp", operator: "GTE", value: sinceISO },
               ]
             }],
-            properties: ["hs_email_subject", "hs_email_text"],
+            properties: ["hs_email_subject", "hs_email_text", "hs_timestamp"],
             limit: 200,
           }).catch(() => ({ results: [] }));
 
+          const realEmailMap = {};
           const realEmailIds = (realEmails.results || [])
             .filter(e => !isAutomatedReply(e.properties?.hs_email_subject || "", e.properties?.hs_email_text || ""))
-            .map(e => e.id);
+            .map(e => {
+              realEmailMap[e.id] = {
+                subject:   e.properties?.hs_email_subject || null,
+                timestamp: e.properties?.hs_timestamp     || null,
+              };
+              return e.id;
+            });
 
           if (realEmailIds.length > 0) {
             const realAssocData = await hsPost(user.userId, "/crm/v4/associations/emails/contacts/batch/read", {
               inputs: realEmailIds.slice(0, 100).map(id => ({ id })),
             }).catch(() => ({ results: [] }));
 
-            // Remove contacts from OOO list if they ALSO have a real reply
+            // Remove contacts from OOO list if they ALSO have a real reply,
+            // AND track that real reply's own timestamp — this is the fix
+            // for a specific, confirmed bug: hs_sales_email_last_replied
+            // reflects whichever reply-like event happened LAST, even if
+            // that's an OOO auto-response to something unrelated sent
+            // AFTER a genuine older reply. A contact isn't excluded from
+            // OOO status just because they have some real reply somewhere
+            // in the window — but the score must use that real reply's
+            // actual date, not the raw (possibly OOO-inflated) property.
             for (const r of (realAssocData.results || [])) {
+              const emailData = realEmailMap[r.from?.id] || {};
               for (const assoc of (r.to || [])) {
-                oooContactsWithOOO.delete(String(assoc.toObjectId));
+                const cid = String(assoc.toObjectId);
+                oooContactsWithOOO.delete(cid);
+                if (!realReplyByContact[cid] || (emailData.timestamp > (realReplyByContact[cid].timestamp || ""))) {
+                  realReplyByContact[cid] = emailData;
+                }
               }
             }
           }
@@ -1374,9 +1395,24 @@ async function computeTaskQueue(user, qp) {
         const p = c.properties || {};
         const salesReplyTs = p.hs_sales_email_last_replied ? new Date(p.hs_sales_email_last_replied).getTime() : 0;
         const mktReplyTs   = p.hs_email_last_reply_date    ? new Date(p.hs_email_last_reply_date).getTime()    : 0;
-        const replyTs      = Math.max(salesReplyTs, mktReplyTs);
+        let replyTs      = Math.max(salesReplyTs, mktReplyTs);
         if (replyTs === 0) return null;
-        const replyDate = replyTs === salesReplyTs ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
+        let replyDate = replyTs === salesReplyTs ? p.hs_sales_email_last_replied : p.hs_email_last_reply_date;
+        let verifiedSubject = null;
+
+        // If a real, verified reply exists for this contact, it wins over
+        // the raw property — confirmed bug: the raw property reflects
+        // whichever reply-like event happened LAST, which can be an OOO
+        // auto-response to something sent well after a genuine older
+        // reply. Using the raw property's date in that case massively
+        // overstates urgency (a 9-day-old reply displayed as "3 hours
+        // ago" because someone's auto-responder fired days later).
+        const realReply = realReplyByContact[String(c.id)];
+        if (realReply?.timestamp) {
+          replyTs = new Date(realReply.timestamp).getTime();
+          replyDate = realReply.timestamp;
+          verifiedSubject = realReply.subject;
+        }
 
         // Filter out contacts that only have OOO/auto-reply emails
         if (oooContactIds.has(String(c.id))) return null;
@@ -1419,7 +1455,7 @@ async function computeTaskQueue(user, qp) {
           isOwnedBySelected: selectedRepOwnerId ? String(contactOwnerId) === selectedRepOwnerId : false,
           lastOutboundDate: null, // lastActivityTs removed — manual activity no longer tracked here
           waitingHours:     Math.round((now - replyTs) / (1000 * 60 * 60)),
-          subject:          p.hs_email_last_email_name || null,
+          subject:          verifiedSubject || p.hs_email_last_email_name || null,
           url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
         };
       })
