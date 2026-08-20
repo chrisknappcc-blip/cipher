@@ -68,10 +68,9 @@ const SORT_OPTIONS = [
 export default function PipelineReviewView({ getToken }) {
   const [config, setConfig] = useState(null)
   const [owners, setOwners] = useState([])
-  const [activePipeline, setActivePipeline] = useState(null)
+  const [selectedPipelines, setSelectedPipelines] = useState(new Set())
   const [ownerFilter, setOwnerFilter] = useState('')
   const [deals, setDeals] = useState([])
-  const [stages, setStages] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selectedDealId, setSelectedDealId] = useState(null)
@@ -135,7 +134,7 @@ export default function PipelineReviewView({ getToken }) {
       setDiscussedIds(new Set(discussedRes.dealIds || []))
       setFocusIds(new Set(focusRes.dealIds || []))
       const firstPipelineId = Object.keys(configRes.pipelines || {}).find(id => !hiddenPipelines.has(id)) || Object.keys(configRes.pipelines || {})[0]
-      setActivePipeline(firstPipelineId)
+      setSelectedPipelines(new Set(firstPipelineId ? [firstPipelineId] : []))
     }).catch(e => setError(e.message))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -146,6 +145,19 @@ export default function PipelineReviewView({ getToken }) {
     return () => clearInterval(interval)
   }, [])
 
+  const togglePipelineSelected = (pipelineId) => {
+    setSelectedPipelines(prev => {
+      const next = new Set(prev)
+      if (next.has(pipelineId)) {
+        if (next.size === 1) return prev // don't allow deselecting the last one
+        next.delete(pipelineId)
+      } else {
+        next.add(pipelineId)
+      }
+      return next
+    })
+  }
+
   const loadDeals = useCallback(async () => {
     if (companyModeActive) {
       if (!companyFilter.trim()) return
@@ -155,7 +167,6 @@ export default function PipelineReviewView({ getToken }) {
         const qs = new URLSearchParams({ company: companyFilter.trim() })
         const data = await apiFetch(`/api/hubspot/pipeline-review?${qs}`, getToken)
         setDeals(data.deals || [])
-        setStages([])
         setLastRefreshed(Date.now())
       } catch (e) {
         setError(e.message)
@@ -164,22 +175,29 @@ export default function PipelineReviewView({ getToken }) {
       }
       return
     }
-    if (!activePipeline) return
+    if (selectedPipelines.size === 0) return
     setLoading(true)
     setError(null)
     try {
-      const qs = new URLSearchParams({ pipeline: activePipeline })
-      if (ownerFilter) qs.set('ownerId', ownerFilter)
-      const data = await apiFetch(`/api/hubspot/pipeline-review?${qs}`, getToken)
-      setDeals(data.deals || [])
-      setStages(data.stages || [])
+      // Fetch every selected pipeline in parallel and merge — each deal
+      // already carries its own pipelineId/pipelineLabel/stageLabel from
+      // the backend, so merging multiple pipelines' results together is
+      // safe without needing a separate "combined" endpoint.
+      const results = await Promise.all(
+        [...selectedPipelines].map(pid => {
+          const qs = new URLSearchParams({ pipeline: pid })
+          if (ownerFilter) qs.set('ownerId', ownerFilter)
+          return apiFetch(`/api/hubspot/pipeline-review?${qs}`, getToken)
+        })
+      )
+      setDeals(results.flatMap(r => r.deals || []))
       setLastRefreshed(Date.now())
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [activePipeline, ownerFilter, companyModeActive, companyFilter, getToken])
+  }, [selectedPipelines, ownerFilter, companyModeActive, companyFilter, getToken])
 
   useEffect(() => { loadDeals() }, [loadDeals])
 
@@ -226,36 +244,38 @@ export default function PipelineReviewView({ getToken }) {
     return sorted
   }, [filteredDeals, sortField, sortDir])
 
-  // Unified grouping for both modes. Pipeline mode groups by the fixed
-  // stage list for that one pipeline. Company mode has no single fixed
-  // stage list (deals can span all three pipelines), so it groups by
-  // pipeline first, then by that pipeline's own stage order.
+  // One unified grouping approach for all three cases (single pipeline,
+  // multiple pipelines selected, or company search across all of them) —
+  // group by pipeline, then by that pipeline's own stage order. The
+  // pipeline name only prefixes the section heading when more than one
+  // pipeline is actually being shown, so selecting just one still looks
+  // exactly like before.
+  const showPipelinePrefix = companyModeActive || selectedPipelines.size > 1
   const sections = useMemo(() => {
-    if (companyModeActive) {
-      if (!config) return []
-      const byPipeline = {}
-      for (const deal of sortedDeals) {
-        const pid = deal.pipelineId
-        if (!byPipeline[pid]) byPipeline[pid] = []
-        byPipeline[pid].push(deal)
-      }
-      const result = []
-      Object.keys(byPipeline).filter(pid => !hiddenPipelines.has(pid)).forEach(pid => {
-        const pLabel = config[pid]?.label || 'Unknown pipeline'
-        const stageOrder = config[pid]?.stages || []
-        stageOrder.forEach(stage => {
-          const stageDeals = byPipeline[pid].filter(d => d.stageId === stage.id)
-          if (stageDeals.length > 0) {
-            result.push({ key: `${pid}-${stage.id}`, label: `${pLabel} · ${stage.label}`, deals: stageDeals })
-          }
-        })
-      })
-      return result
+    if (!config) return []
+    const byPipeline = {}
+    for (const deal of sortedDeals) {
+      const pid = deal.pipelineId
+      if (!byPipeline[pid]) byPipeline[pid] = []
+      byPipeline[pid].push(deal)
     }
-    return stages
-      .map(stage => ({ key: stage.id, label: stage.label, deals: sortedDeals.filter(d => d.stageId === stage.id) }))
-      .filter(s => s.deals.length > 0)
-  }, [companyModeActive, sortedDeals, config, stages, hiddenPipelines])
+    const result = []
+    Object.keys(byPipeline).filter(pid => !hiddenPipelines.has(pid)).forEach(pid => {
+      const pLabel = config[pid]?.label || 'Unknown pipeline'
+      const stageOrder = config[pid]?.stages || []
+      stageOrder.forEach(stage => {
+        const stageDeals = byPipeline[pid].filter(d => d.stageId === stage.id)
+        if (stageDeals.length > 0) {
+          result.push({
+            key: `${pid}-${stage.id}`,
+            label: showPipelinePrefix ? `${pLabel} · ${stage.label}` : stage.label,
+            deals: stageDeals,
+          })
+        }
+      })
+    })
+    return result
+  }, [sortedDeals, config, hiddenPipelines, showPipelinePrefix])
 
   const selectedDeal = deals.find(d => d.id === selectedDealId) || null
   const [lastMeeting, setLastMeeting] = useState(null)
@@ -401,35 +421,42 @@ export default function PipelineReviewView({ getToken }) {
       <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
         <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          {Object.entries(config).filter(([id]) => !hiddenPipelines.has(id)).map(([id, p]) => (
+          {Object.entries(config).filter(([id]) => !hiddenPipelines.has(id)).map(([id, p]) => {
+            const isSelected = selectedPipelines.has(id) && !companyModeActive
+            return (
             <div key={id} style={{ position: 'relative', display: 'flex' }}>
-              <button onClick={() => { setCompanyModeActive(false); setActivePipeline(id) }}
+              <button onClick={() => { setCompanyModeActive(false); togglePipelineSelected(id) }}
                 disabled={companyModeActive}
+                title={isSelected ? `Remove ${p.label} from view` : `Add ${p.label} to view`}
                 style={{
                   padding: '8px 26px 8px 14px', borderRadius: 'var(--radius)', fontSize: 12.5, cursor: companyModeActive ? 'default' : 'pointer',
                   opacity: companyModeActive ? 0.4 : 1,
-                  background: activePipeline === id && !companyModeActive ? 'var(--accent)' : 'var(--bg-secondary)',
-                  color: activePipeline === id && !companyModeActive ? '#fff' : 'var(--text-secondary)',
-                  border: '1px solid ' + (activePipeline === id && !companyModeActive ? 'var(--accent)' : 'var(--border)'),
+                  background: isSelected ? 'var(--accent)' : 'var(--bg-secondary)',
+                  color: isSelected ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid ' + (isSelected ? 'var(--accent)' : 'var(--border)'),
                 }}>
-                {p.label}
+                {isSelected && '✓ '}{p.label}
               </button>
               {!companyModeActive && (
                 <button onClick={(e) => {
                     e.stopPropagation()
                     togglePipelineHidden(id)
-                    if (activePipeline === id) {
+                    if (selectedPipelines.has(id) && selectedPipelines.size === 1) {
                       const nextVisible = Object.keys(config).find(pid => pid !== id && !hiddenPipelines.has(pid))
-                      if (nextVisible) setActivePipeline(nextVisible)
+                      if (nextVisible) setSelectedPipelines(new Set([nextVisible]))
                     }
                   }}
                   title={`Hide ${p.label}`}
-                  style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: activePipeline === id ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)', padding: 2, lineHeight: 1 }}>
+                  style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: isSelected ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)', padding: 2, lineHeight: 1 }}>
                   ×
                 </button>
               )}
             </div>
-          ))}
+            )
+          })}
+          {selectedPipelines.size > 1 && !companyModeActive && (
+            <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{selectedPipelines.size} pipelines combined</span>
+          )}
 
           {hiddenPipelines.size > 0 && !companyModeActive && (
             <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
