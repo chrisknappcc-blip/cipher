@@ -7317,12 +7317,19 @@ export const handler = async (event, context) => {
         const dealId = path.replace("/pipeline-review/deal/", "");
         const engagementsData = await hsGet(user.userId, `/engagements/v1/engagements/associated/DEAL/${dealId}/paged`, { limit: 20 }).catch(() => ({ results: [] }));
 
-        const allEngagements = (engagementsData.results || []).map(eng => ({
-          type: eng.engagement?.type || "UNKNOWN",
-          timestamp: eng.engagement?.timestamp ? new Date(eng.engagement.timestamp).toISOString() : null,
-          body: stripHtml(eng.metadata?.body || eng.metadata?.text || null),
-          subject: eng.metadata?.subject || null,
-        }));
+        const allEngagements = (engagementsData.results || []).map(eng => {
+          const type = eng.engagement?.type || "UNKNOWN";
+          return {
+            type,
+            timestamp: eng.engagement?.timestamp ? new Date(eng.engagement.timestamp).toISOString() : null,
+            body: stripHtml(eng.metadata?.body || eng.metadata?.text || null),
+            // Meetings get a guaranteed "Meeting" fallback so one can never
+            // be silently excluded below purely for lacking notes or a
+            // title — that's exactly what caused Last Meeting and Recent
+            // Activity to show different dates for the same deal.
+            subject: eng.metadata?.subject || eng.metadata?.title || (type === "MEETING" ? "Meeting" : null),
+          };
+        });
 
         const recap = allEngagements
           .filter(e => e.body || e.subject)
