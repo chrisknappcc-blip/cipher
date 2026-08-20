@@ -1544,7 +1544,6 @@ async function computeTaskQueue(user, qp) {
           ],
         }],
         properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
-        associations: ["contacts"],
         sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
         limit:  200,
       }).catch(() => ({ results: [] })),
@@ -1559,19 +1558,22 @@ async function computeTaskQueue(user, qp) {
           ],
         }],
         properties: ["hs_task_subject","hs_task_status","hs_task_type","hs_timestamp","hs_task_priority","hs_task_body","hubspot_owner_id"],
-        associations: ["contacts"],
         sorts:  [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
         limit:  200,
       }).catch(() => ({ results: [] })),
     ]);
 
+    // Real batch association fetch — the associations param on the line
+    // above never works (Search API confirmed to never return an
+    // associations block, same issue already fixed for deals and
+    // meetings elsewhere in this file). Every task was silently showing
+    // with no contact/company attached because of this.
+    const allTaskIds = [...(upcomingTasksData.results || []), ...(overdueTasksData.results || [])].map(t => t.id);
+    const taskContactAssoc = await batchFetchAssociations(user.userId, "tasks", "contacts", allTaskIds);
+
     // ── Batch-fetch contacts associated with these tasks so the queue
     // can dedupe a task against other signals for the same contact ──────
-    const taskContactIds = [...new Set(
-      [...(upcomingTasksData.results || []), ...(overdueTasksData.results || [])]
-        .map(t => t.associations?.contacts?.results?.[0]?.id)
-        .filter(Boolean)
-    )];
+    const taskContactIds = [...new Set(Object.values(taskContactAssoc).flat())];
     const taskContactMap = {};
     if (taskContactIds.length > 0) {
       try {
@@ -1584,7 +1586,7 @@ async function computeTaskQueue(user, qp) {
     }
 
     const normalizeTask = (t, overdue = false) => {
-      const contactId = t.associations?.contacts?.results?.[0]?.id || null;
+      const contactId = (taskContactAssoc[t.id] || [])[0] || null;
       return {
         id:       t.id,
         subject:  t.properties?.hs_task_subject  || "Untitled task",
