@@ -7605,6 +7605,27 @@ export const handler = async (event, context) => {
       }
     }
 
+    // TEMPORARY diagnostic — GET /whoami. Directly checks what
+    // /crm/v3/owners/me resolves to for the current session, to settle
+    // whether cross-user leakage in the queue is caused by identity
+    // resolution returning the wrong (or a shared) owner rather than a
+    // filter-logic bug. Safe to remove once the Michael Strong issue is
+    // resolved — this doesn't touch any real functionality.
+    if (method === "GET" && path === "/whoami") {
+      try {
+        const meData = await hsGet(user.userId, "/crm/v3/owners/me", {});
+        return ok({
+          cipherUserId: user.userId,
+          cipherEmail: user.email || null,
+          hubspotOwnerId: meData?.id || null,
+          hubspotName: meData ? `${meData.firstName || ""} ${meData.lastName || ""}`.trim() : null,
+          hubspotEmail: meData?.email || null,
+        });
+      } catch (err) {
+        return error(500, `Whoami error: ${err.message}`);
+      }
+    }
+
     return error(404, "Route not found");
 
   })(event, context);
