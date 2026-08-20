@@ -36,6 +36,27 @@ function urgencyColor(score) {
   return 'var(--urgency-cooling)'
 }
 
+// Single source of truth for "when was this email actually sent." sentAt is
+// the real send-time signal; timestamp/createdAt just means "when the
+// engagement record was logged in HubSpot," which can genuinely diverge
+// from the real send time (sync delays, imports, marketing automation).
+// Both the summary and the list below call this so they can't silently
+// disagree on date priority the way they once did.
+function emailDate(e) {
+  return e.sentAt || e.timestamp || null
+}
+
+// 12-hour meeting time range, e.g. "2:00 – 2:30 PM"
+function meetingTimeRange(startIso, endIso) {
+  if (!startIso) return null
+  const start = new Date(startIso)
+  const startStr = start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+  if (!endIso) return startStr
+  const end = new Date(endIso)
+  const endStr = end.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+  return `${startStr} – ${endStr}`
+}
+
 function displayName(item) {
   return item.contact?.name || item.label || 'Untitled'
 }
@@ -95,6 +116,33 @@ function timeAgo(iso) {
   if (hours < 1) return 'under an hour ago'
   if (hours < 24) return `${Math.round(hours)}h ago`
   return `${Math.round(hours / 24)}d ago`
+}
+
+// 12-hour absolute timestamp — pairs with timeAgo() so "3d ago" always has
+// a real date/time next to it, removing any doubt about what it means.
+function absoluteTime(iso) {
+  if (!iso) return null
+  const d = new Date(iso)
+  const now = new Date()
+  const sameYear = d.getFullYear() === now.getFullYear()
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' }),
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  })
+}
+
+// Time between two ISO timestamps, in the same relative style as timeAgo —
+// used for "opened 10 minutes after sending" vs "opened 3 weeks later."
+function timeBetween(fromIso, toIso) {
+  if (!fromIso || !toIso) return null
+  const ms = new Date(toIso).getTime() - new Date(fromIso).getTime()
+  if (ms < 0) return null
+  const mins = ms / 60000
+  if (mins < 60) return `${Math.max(1, Math.round(mins))}m`
+  const hours = mins / 60
+  if (hours < 24) return `${Math.round(hours)}h`
+  return `${Math.round(hours / 24)}d`
 }
 
 // Lightweight frontend mirror of the backend's bounce/OOO detection — used
@@ -215,9 +263,11 @@ export default function RightNowView({ getToken, user }) {
   // regardless of how the formula would otherwise score it.
   const todaysMeetings = useMemo(() => {
     const todayStr = new Date().toDateString()
-    return visibleQueue.filter(item =>
-      item.source === 'meeting' && item.raw?.startTime && new Date(item.raw.startTime).toDateString() === todayStr
-    )
+    return visibleQueue
+      .filter(item =>
+        item.source === 'meeting' && item.raw?.startTime && new Date(item.raw.startTime).toDateString() === todayStr
+      )
+      .sort((a, b) => new Date(a.raw.startTime) - new Date(b.raw.startTime))
   }, [visibleQueue])
   const todaysMeetingIds = useMemo(() => new Set(todaysMeetings.map(i => i.id)), [todaysMeetings])
 
@@ -412,7 +462,7 @@ export default function RightNowView({ getToken, user }) {
         bounced: isBounceLike(e.subject, e.body),
         automated: isOooLike(e.subject, e.body),
       }))
-      .sort((a, b) => new Date(b.timestamp || b.sentAt || 0) - new Date(a.timestamp || a.sentAt || 0))
+      .sort((a, b) => new Date(emailDate(b) || 0) - new Date(emailDate(a) || 0))
       .slice(0, 5)
   }, [contactDetail])
 
@@ -434,11 +484,11 @@ export default function RightNowView({ getToken, user }) {
       : null
     const latestEngagement = emailEngagements
       .filter(e => !e.bounced)
-      .sort((a, b) => new Date(b.sentAt || b.timestamp || 0) - new Date(a.sentAt || a.timestamp || 0))[0]
+      .sort((a, b) => new Date(emailDate(b) || 0) - new Date(emailDate(a) || 0))[0]
     const oneToOne = latestEngagement
       ? {
           name: latestEngagement.subject,
-          at: latestEngagement.sentAt || latestEngagement.timestamp,
+          at: emailDate(latestEngagement),
           system: '1:1 / logged',
           // Tied to THIS specific engagement's own open data, not a
           // disconnected global "have they ever opened anything" property —
@@ -570,7 +620,12 @@ export default function RightNowView({ getToken, user }) {
                     }}>
                       <span style={{ fontSize: 15 }}>📅</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={item} /></div>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--urgency-warm)', whiteSpace: 'nowrap' }}>
+                            {meetingTimeRange(item.raw?.startTime, item.raw?.endTime)}
+                          </span>
+                          <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={item} /></div>
+                        </div>
                         <RepInfoLine item={item} />
                         <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>{item.whyTag}</div>
                       </div>
@@ -759,9 +814,20 @@ export default function RightNowView({ getToken, user }) {
             {mostRecentEmail ? (
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.9, marginBottom: 14 }}>
                 <div><strong style={{ color: 'var(--text)' }}>Last email:</strong> {mostRecentEmail.name || '(no subject)'}</div>
-                <div><strong style={{ color: 'var(--text)' }}>Sent:</strong> {timeAgo(mostRecentEmail.at)} <span style={{ color: 'var(--text-tertiary)' }}>({mostRecentEmail.system})</span></div>
+                <div>
+                  <strong style={{ color: 'var(--text)' }}>Sent:</strong> {timeAgo(mostRecentEmail.at)}
+                  {absoluteTime(mostRecentEmail.at) && <span style={{ color: 'var(--text-tertiary)' }}> ({absoluteTime(mostRecentEmail.at)})</span>}
+                  <span style={{ color: 'var(--text-tertiary)' }}> · {mostRecentEmail.system}</span>
+                </div>
                 {mostRecentEmail.openedAt ? (
-                  <div><strong style={{ color: 'var(--text)' }}>Opened:</strong> yes, {timeAgo(mostRecentEmail.openedAt)}{mostRecentEmail.numOpens > 1 ? ` (${mostRecentEmail.numOpens}x)` : ''}</div>
+                  <div>
+                    <strong style={{ color: 'var(--text)' }}>Opened:</strong> yes, {timeAgo(mostRecentEmail.openedAt)}
+                    {absoluteTime(mostRecentEmail.openedAt) && <span style={{ color: 'var(--text-tertiary)' }}> ({absoluteTime(mostRecentEmail.openedAt)})</span>}
+                    {timeBetween(mostRecentEmail.at, mostRecentEmail.openedAt) && (
+                      <span style={{ color: 'var(--text-tertiary)' }}> — {timeBetween(mostRecentEmail.at, mostRecentEmail.openedAt)} after sending</span>
+                    )}
+                    {mostRecentEmail.numOpens > 1 ? ` (${mostRecentEmail.numOpens}x)` : ''}
+                  </div>
                 ) : (
                   <div><strong style={{ color: 'var(--text)' }}>Opened:</strong> not yet</div>
                 )}
@@ -786,6 +852,9 @@ export default function RightNowView({ getToken, user }) {
               ) : contactDetail?.lastMeeting ? (
                 <>
                   {contactDetail.lastMeeting.subject} — {timeAgo(contactDetail.lastMeeting.timestamp)}
+                  {absoluteTime(contactDetail.lastMeeting.timestamp) && (
+                    <span style={{ color: 'var(--text-tertiary)' }}> ({absoluteTime(contactDetail.lastMeeting.timestamp)})</span>
+                  )}
                   <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginLeft: 6 }}>
                     (via {contactDetail.lastMeeting.source === 'outlook' ? 'Outlook' : 'HubSpot'})
                   </span>
@@ -807,8 +876,17 @@ export default function RightNowView({ getToken, user }) {
                       <div style={{ color: e.bounced ? 'var(--red)' : 'var(--text-tertiary)' }}>
                         {e.bounced ? 'Bounced, undelivered' : (
                           <>
-                            Sent {timeAgo(e.sentAt || e.timestamp)}
-                            {e.numOpens > 0 && ` · opened ${e.numOpens}x`}
+                            Sent {timeAgo(emailDate(e))}
+                            {absoluteTime(emailDate(e)) && (
+                              <span style={{ color: 'var(--text-tertiary)', opacity: 0.75 }}> ({absoluteTime(emailDate(e))})</span>
+                            )}
+                            {e.numOpens > 0 && (
+                              <>
+                                {' · opened'}
+                                {timeBetween(emailDate(e), e.openedAt) && ` ${timeBetween(emailDate(e), e.openedAt)} later`}
+                                {e.numOpens > 1 && ` (${e.numOpens}x)`}
+                              </>
+                            )}
                             {e.numClicks > 0 && ` · clicked ${e.numClicks}x`}
                             {e.replied && e.automated && ' · auto-reply (OOO, not a real response)'}
                             {e.replied && !e.automated && ' · replied'}
