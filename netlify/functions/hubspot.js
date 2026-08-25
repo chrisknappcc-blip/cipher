@@ -1636,20 +1636,31 @@ async function computeTaskQueue(user, qp) {
         return !bdr || bdr === repName;
       });
 
-    // ── Section 4: High sequence engagement (3+ opens, no reply yet) ─────
+    // ── Section 4: High sequence engagement (3+ opens, active recently) ──
     // Built on cipher_sequence_opens — a real, already-populated property
-    // (confirmed directly against live data, values up to 57 seen) rather
-    // than something reconstructed from raw engagement records. This is a
-    // deliberately narrow, high-signal list: someone opening the same
-    // sequence 3+ times without replying is a real interest signal that
-    // doesn't otherwise surface anywhere else in the queue.
+    // (confirmed directly against live data, values up to 57 seen). BUT:
+    // it's a single cumulative all-time counter with no time dimension at
+    // all, and checking per-email hs_email_open_count directly showed it
+    // just duplicates the same cumulative number across every related
+    // email record rather than tracking genuine distinct per-email opens
+    // — so there's no reliable way to recompute a true "opens in the last
+    // 30 days" sum from what's actually in this portal's data.
+    // The honest, achievable fix: gate the all-time count by RECENCY using
+    // hs_sales_email_last_opened (confirmed reliably populated, with real
+    // variation — some contacts with high all-time counts hadn't opened
+    // anything in 40+ days). A contact only qualifies if they've actually
+    // opened something in the last 30 days, so a stale count from months
+    // ago can't surface here even though the displayed number is still
+    // the cumulative total, not a recomputed 30-day figure.
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const highEngagementFilterGroups = buildFilterGroups(qp, [
       { propertyName: "cipher_sequence_opens", operator: "GTE", value: "3" },
+      { propertyName: "hs_sales_email_last_opened", operator: "GTE", value: thirtyDaysAgo },
     ]);
     const highEngagementData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
       filterGroups: highEngagementFilterGroups,
-      properties: [...BASE_CONTACT_PROPS, "cipher_sequence_opens", "cipher_sequence_replies", "cipher_sequence_clicks"],
-      sorts: [{ propertyName: "cipher_sequence_opens", direction: "DESCENDING" }],
+      properties: [...BASE_CONTACT_PROPS, "cipher_sequence_opens", "cipher_sequence_replies", "cipher_sequence_clicks", "hs_sales_email_last_opened"],
+      sorts: [{ propertyName: "hs_sales_email_last_opened", direction: "DESCENDING" }],
       limit: 20,
     }).catch(() => ({ results: [] }));
 
@@ -1657,13 +1668,16 @@ async function computeTaskQueue(user, qp) {
       .map(c => {
         const p = c.properties || {};
         const info = normalizeContact(c);
+        const opens = parseInt(p.cipher_sequence_opens, 10) || 0;
         return {
           id: `hiseq-${c.id}`,
           contactId: c.id,
           contact: info,
-          opens: parseInt(p.cipher_sequence_opens, 10) || 0,
+          opens,
           replies: parseInt(p.cipher_sequence_replies, 10) || 0,
           clicks: parseInt(p.cipher_sequence_clicks, 10) || 0,
+          lastOpenedAt: p.hs_sales_email_last_opened || null,
+          whyTag: `Opened ${opens} time${opens === 1 ? "" : "s"} (all-time), last opened within 30 days — no reply yet`,
           url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
         };
       })
