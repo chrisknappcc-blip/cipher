@@ -172,6 +172,7 @@ function looksLikeItNeedsAReply(body) {
 
 export default function RightNowView({ getToken, user }) {
   const [queue, setQueue] = useState([])
+  const [highEngagement, setHighEngagement] = useState([])
   const [top5Picks, setTop5Picks] = useState([]) // raw {id, rank, rationale} from the scheduled job
   const [pinnedIds, setPinnedIds] = useState(new Set())
   const [dismissedIds, setDismissedIds] = useState(new Set())
@@ -208,6 +209,7 @@ export default function RightNowView({ getToken, user }) {
         // that don't apply when just looking at someone else's list).
         const queueRes = await apiFetch(`/api/hubspot/team/queue?userId=${encodeURIComponent(viewingUserId)}`, getToken)
         setQueue(queueRes.queue || [])
+        setHighEngagement([])
         setTop5Picks([])
         setPinnedIds(new Set())
         setPersistedDismissed([])
@@ -223,6 +225,7 @@ export default function RightNowView({ getToken, user }) {
         apiFetch('/api/hubspot/todo', getToken).catch(() => ({ items: [] })),
       ])
       setQueue(queueRes.queue || [])
+      setHighEngagement(queueRes.highSequenceEngagement || [])
       setTop5Picks(top5Res.picks || [])
       setPinnedIds(new Set(pinRes.pinnedIds || []))
       setPersistedDismissed(dismissedRes.items || [])
@@ -448,7 +451,7 @@ export default function RightNowView({ getToken, user }) {
     }
   }
 
-  const selectedItem = queue.find(i => i.id === selectedId) || null
+  const selectedItem = queue.find(i => i.id === selectedId) || highEngagement.find(i => i.id === selectedId) || null
 
   useEffect(() => {
     if (!selectedItem?.contactId) {
@@ -651,7 +654,7 @@ export default function RightNowView({ getToken, user }) {
 
             {top5Combined.length > 0 && (
               <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                   <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px', color: 'var(--accent)' }}>TOP 5 RIGHT NOW</span>
                   {!viewingUserId && (
                     <button onClick={regenerateTop5} disabled={regenerating}
@@ -659,6 +662,9 @@ export default function RightNowView({ getToken, user }) {
                       {regenerating ? 'Refreshing…' : 'Refresh Top 5 now'}
                     </button>
                   )}
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginBottom: 10 }}>
+                  These items refresh automatically once an hour — use "Refresh Top 5 now" for an immediate update.
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 22 }}>
                   {top5Combined.map((item, idx) => {
@@ -704,6 +710,45 @@ export default function RightNowView({ getToken, user }) {
                       </div>
                     )
                   })}
+                </div>
+              </>
+            )}
+
+            {highEngagement.length > 0 && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px', color: 'var(--pin-color)' }}>HIGH ENGAGEMENT — 3+ SEQUENCE OPENS</span>
+                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>· opened repeatedly, no reply yet</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 22 }}>
+                  {highEngagement.map(item => (
+                    <div key={item.id} onClick={() => setSelectedId(item.id)} style={{
+                      borderRadius: 14, padding: '13px 16px', display: 'flex', gap: 11, alignItems: 'center', cursor: 'pointer',
+                      background: 'color-mix(in srgb, var(--pin-color) 8%, var(--bg-panel))',
+                      border: '1px solid color-mix(in srgb, var(--pin-color) 35%, var(--border))',
+                      boxShadow: 'var(--shadow-soft)',
+                    }}>
+                      <div style={{
+                        flexShrink: 0, width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: 'var(--pin-color)', color: '#fff', fontSize: 15, fontWeight: 700,
+                      }}>
+                        {item.opens}&times;
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={{ contact: item.contact }} /></div>
+                        <RepInfoLine item={{ contact: item.contact }} />
+                        <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
+                          Opened {item.opens} times{item.clicks > 0 ? ` · clicked ${item.clicks}x` : ''}{item.replies > 0 ? ` · ${item.replies} repl${item.replies === 1 ? 'y' : 'ies'}` : ' · no reply yet'}
+                        </div>
+                      </div>
+                      {item.contact?.contactUrl && (
+                        <a href={item.contact.contactUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                          style={{ flexShrink: 0, fontSize: 11, padding: '5px 10px', borderRadius: 8, border: '1px solid var(--border-strong)', color: 'var(--text-tertiary)', textDecoration: 'none' }}>
+                          View
+                        </a>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </>
             )}
