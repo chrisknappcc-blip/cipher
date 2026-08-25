@@ -1636,11 +1636,50 @@ async function computeTaskQueue(user, qp) {
         return !bdr || bdr === repName;
       });
 
+    // ── Section 4: High sequence engagement (3+ opens, no reply yet) ─────
+    // Built on cipher_sequence_opens — a real, already-populated property
+    // (confirmed directly against live data, values up to 57 seen) rather
+    // than something reconstructed from raw engagement records. This is a
+    // deliberately narrow, high-signal list: someone opening the same
+    // sequence 3+ times without replying is a real interest signal that
+    // doesn't otherwise surface anywhere else in the queue.
+    const highEngagementFilterGroups = buildFilterGroups(qp, [
+      { propertyName: "cipher_sequence_opens", operator: "GTE", value: "3" },
+    ]);
+    const highEngagementData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
+      filterGroups: highEngagementFilterGroups,
+      properties: [...BASE_CONTACT_PROPS, "cipher_sequence_opens", "cipher_sequence_replies", "cipher_sequence_clicks"],
+      sorts: [{ propertyName: "cipher_sequence_opens", direction: "DESCENDING" }],
+      limit: 20,
+    }).catch(() => ({ results: [] }));
+
+    const highSequenceEngagement = (highEngagementData.results || [])
+      .map(c => {
+        const p = c.properties || {};
+        const info = normalizeContact(c);
+        return {
+          id: `hiseq-${c.id}`,
+          contactId: c.id,
+          contact: info,
+          opens: parseInt(p.cipher_sequence_opens, 10) || 0,
+          replies: parseInt(p.cipher_sequence_replies, 10) || 0,
+          clicks: parseInt(p.cipher_sequence_clicks, 10) || 0,
+          url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
+        };
+      })
+      // Same assigned_bdr precedence rule as the other sections.
+      .filter(c => {
+        if (!repName) return true;
+        const bdr = c.contact?.assignedBdr;
+        return !bdr || bdr === repName;
+      });
+
     return {
       repliesAwaitingResponse,
       oooReplies,
       upcomingSequences,
       dueTasks,
+      highSequenceEngagement,
       meta: {
         days,
         counts: {
@@ -1962,6 +2001,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
 
     // ── To-dos ────────────────────────────────────────────────────────────
     const todos = await getTodos(userId);
+    const highSequenceEngagement = taskData.highSequenceEngagement || [];
 
     const queue = buildRightNowQueue({
       signals: [
@@ -1995,7 +2035,10 @@ export async function computeRightNowQueue(userId, qp = {}) {
     // HubSpot link from. This does one batch fetch for real company
     // associations across every contact referenced in the queue, plus one
     // batch fetch for each contact's most recent sequence enrollment.
-    const queueContactIds = [...new Set(queue.map(item => item.contactId).filter(Boolean))];
+    const queueContactIds = [...new Set([
+      ...queue.map(item => item.contactId),
+      ...highSequenceEngagement.map(item => item.contactId),
+    ].filter(Boolean))];
     if (queueContactIds.length > 0) {
       try {
         const contactCompanyAssoc = await batchFetchAssociations(userId, "contacts", "companies", queueContactIds);
@@ -2021,7 +2064,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
           ownerNamesById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
         });
 
-        queue.forEach(item => {
+        const enrichContact = (item) => {
           if (!item.contactId || !item.contact) return;
           const companyId = (contactCompanyAssoc[item.contactId] || [])[0] || null;
           item.contact = {
@@ -2032,12 +2075,21 @@ export async function computeRightNowQueue(userId, qp = {}) {
             companyUrl: companyId ? `https://app.hubspot.com/contacts/39921549/record/0-2/${companyId}` : null,
             ownerName: item.contact.ownerId ? (ownerNamesById[String(item.contact.ownerId)] || null) : null,
           };
-        });
+        };
+        queue.forEach(enrichContact);
+        highSequenceEngagement.forEach(enrichContact);
       } catch (err) {
         console.error("[right-now] Contact/company enrichment failed, continuing with unenriched contacts:", err.message);
       }
     }
 
+    // Attached as a property on the array itself, not a change to the
+    // return shape — every existing caller (the live endpoint, /team/queue,
+    // /top5/regenerate, the scheduler) expects a plain array back and uses
+    // array methods on it directly. An array is still an object in JS, so
+    // this is fully backward compatible while still letting new code
+    // (the /right-now endpoint) pick up the new section when it wants to.
+    queue.highSequenceEngagement = highSequenceEngagement;
     return queue;
 }
 
@@ -7019,7 +7071,7 @@ export const handler = async (event, context) => {
     if (method === "GET" && path === "/right-now") {
       try {
         const queue = await computeRightNowQueue(user.userId, qp);
-        return ok({ queue });
+        return ok({ queue, highSequenceEngagement: queue.highSequenceEngagement || [] });
       } catch (err) {
         console.error("[right-now] Error:", err.message);
         return error(500, `Right now error: ${err.message}`);
