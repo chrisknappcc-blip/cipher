@@ -276,7 +276,7 @@ export default function RightNowView({ getToken, user }) {
 
   const top5Combined = useMemo(() => {
     const eligible = visibleQueue.filter(item => !todaysMeetingIds.has(item.id))
-    const pinnedItems = eligible
+    const pinnedItems = [...eligible, ...highEngagement]
       .filter(item => pinnedIds.has(item.id))
       .map(item => ({ ...item, isPinned: true }))
 
@@ -291,7 +291,7 @@ export default function RightNowView({ getToken, user }) {
       .filter(Boolean)
 
     return [...pinnedItems, ...aiItems]
-  }, [visibleQueue, todaysMeetingIds, pinnedIds, top5Picks])
+  }, [visibleQueue, todaysMeetingIds, pinnedIds, top5Picks, highEngagement])
 
   const top5Ids = useMemo(() => new Set(top5Combined.map(i => i.id)), [top5Combined])
 
@@ -718,10 +718,13 @@ export default function RightNowView({ getToken, user }) {
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                   <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px', color: 'var(--pin-color)' }}>HIGH ENGAGEMENT — 3+ SEQUENCE OPENS</span>
-                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>· opened repeatedly, no reply yet</span>
+                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>· all-time count, active within last 30 days</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 22 }}>
-                  {highEngagement.map(item => (
+                  {highEngagement.map(item => {
+                    const isPinned = pinnedIds.has(item.id)
+                    const name = displayName({ contact: item.contact })
+                    return (
                     <div key={item.id} onClick={() => setSelectedId(item.id)} style={{
                       borderRadius: 14, padding: '13px 16px', display: 'flex', gap: 11, alignItems: 'center', cursor: 'pointer',
                       background: 'color-mix(in srgb, var(--pin-color) 8%, var(--bg-panel))',
@@ -738,17 +741,25 @@ export default function RightNowView({ getToken, user }) {
                         <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={{ contact: item.contact }} /></div>
                         <RepInfoLine item={{ contact: item.contact }} />
                         <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
-                          Opened {item.opens} times{item.clicks > 0 ? ` · clicked ${item.clicks}x` : ''}{item.replies > 0 ? ` · ${item.replies} repl${item.replies === 1 ? 'y' : 'ies'}` : ' · no reply yet'}
+                          {item.opens} opens all-time{item.clicks > 0 ? ` · clicked ${item.clicks}x` : ''}{item.replies > 0 ? ` · ${item.replies} repl${item.replies === 1 ? 'y' : 'ies'}` : ' · no reply yet'}
+                          {item.lastOpenedAt && <span style={{ color: 'var(--text-tertiary)' }}> · last opened {timeAgo(item.lastOpenedAt)}</span>}
                         </div>
                       </div>
-                      {item.contact?.contactUrl && (
-                        <a href={item.contact.contactUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-                          style={{ flexShrink: 0, fontSize: 11, padding: '5px 10px', borderRadius: 8, border: '1px solid var(--border-strong)', color: 'var(--text-tertiary)', textDecoration: 'none' }}>
-                          View
-                        </a>
-                      )}
+                      <button onClick={(e) => { e.stopPropagation(); if (!viewingUserId) togglePin(item.id, name) }}
+                        disabled={!!viewingUserId}
+                        title={viewingUserId ? 'Read-only — viewing a teammate\'s queue' : undefined}
+                        style={{
+                          flexShrink: 0, fontSize: 11, padding: '5px 10px', borderRadius: 8, cursor: viewingUserId ? 'not-allowed' : 'pointer',
+                          background: isPinned ? 'var(--pin-color)' : 'none',
+                          color: isPinned ? 'var(--bg)' : 'var(--text-tertiary)',
+                          border: isPinned ? 'none' : '1px solid var(--border-strong)',
+                          opacity: viewingUserId ? 0.4 : 1,
+                        }}>
+                        {isPinned ? 'Remove pin' : 'Pin to Top 5'}
+                      </button>
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </>
             )}
