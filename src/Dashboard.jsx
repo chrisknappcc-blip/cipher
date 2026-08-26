@@ -3,6 +3,7 @@ import { apiFetch } from './api'
 import RightNowView from './RightNowView'
 import TeamView from './TeamView'
 import PipelineReviewView from './PipelineReviewView'
+import ResourcesView from './ResourcesView'
 
 // ─── Persona detection ────────────────────────────────────────────────────────
 const PERSONAS = {
@@ -2306,6 +2307,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     { key:'reports',       label:'Reports', icon:'chart',    color:'var(--nav-reports)' },
     { key:'pipeline-review', label:'Pipeline Review', icon:'pipeline', color:'var(--nav-pipeline)' },
     { key:'team',          label:'Team',    icon:'users',    color:'var(--nav-team)' },
+    { key:'resources',     label:'Resources', icon:'book',   color:'var(--nav-resources)' },
   ]
 
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -2327,6 +2329,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     if (name === 'list')  return <svg {...common}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
     if (name === 'users') return <svg {...common}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
     if (name === 'pipeline') return <svg {...common}><path d="M4 4h16v4l-6 6v6l-4-2v-4L4 8z"/></svg>
+    if (name === 'book') return <svg {...common}><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
     return null
   }
 
@@ -2428,6 +2431,10 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
 
         {activeTab === 'pipeline-review' && (
           <PipelineReviewView getToken={getToken} />
+        )}
+
+        {activeTab === 'resources' && (
+          <ResourcesView getToken={getToken} />
         )}
 
         {activeTab === 'dashboard' && (
