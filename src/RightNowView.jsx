@@ -870,12 +870,38 @@ export default function RightNowView({ getToken, user }) {
               </div>
             )}
 
+            {contactDetail?.contact?.properties && (parseInt(contactDetail.contact.properties.cipher_sequence_sends, 10) > 0) && (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 6 }}>
+                  Sequence Engagement
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                  {contactDetail.contact.properties.cipher_sequence_sends || 0} sent
+                  {' · '}{contactDetail.contact.properties.cipher_sequence_opens || 0} opened
+                  {' · '}{contactDetail.contact.properties.cipher_sequence_clicks || 0} clicked
+                  {' · '}{contactDetail.contact.properties.cipher_sequence_replies || 0} repl{contactDetail.contact.properties.cipher_sequence_replies === '1' ? 'y' : 'ies'}
+                  {contactDetail.contact.properties.cipher_sequence_last_open_date && (
+                    <div style={{ color: 'var(--text-tertiary)', marginTop: 2 }}>
+                      Last opened {timeAgo(contactDetail.contact.properties.cipher_sequence_last_open_date)}
+                      {absoluteTime(contactDetail.contact.properties.cipher_sequence_last_open_date) && ` (${absoluteTime(contactDetail.contact.properties.cipher_sequence_last_open_date)})`}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
               Why it's in the queue
             </div>
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 14 }}>
               {selectedItem.whyTag || 'No reason recorded'}
             </div>
+
+            {selectedItem.raw?.type === 'REPLY' && selectedItem.raw?.sequenceReplyConfirmed === false && (
+              <div style={{ fontSize: 11.5, background: 'var(--amber-light)', color: 'var(--amber)', padding: '7px 10px', borderRadius: 8, marginBottom: 14 }}>
+                Not confirmed by sequence-level reply tracking — could be a reply to a non-sequence email, or worth a second look before treating this as fully verified.
+              </div>
+            )}
 
             {looksLikeItNeedsAReply(lastIncomingBody) && (
               <div style={{ fontSize: 11.5, background: 'var(--amber-light)', color: 'var(--amber)', padding: '7px 10px', borderRadius: 8, marginBottom: 14 }}>
