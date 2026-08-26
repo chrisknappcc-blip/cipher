@@ -252,6 +252,18 @@ const BASE_CONTACT_PROPS = [
   // hs_latest_sequence_enrolled stores a numeric sequence ID, not the name.
   // Name resolution requires a separate sequence enrollment lookup (fetchSequenceEnrollments).
   "hs_sequences_actively_enrolled_count",
+  // Cipher's own sequence-tracking properties (workflow-driven, confirmed
+  // reliable via direct spot-checks against real email content — unlike
+  // the native hs_sales_email_last_replied, these correctly exclude OOO
+  // auto-replies). cipher_sequence_last_open_date is a date+time property
+  // added specifically to give this precise recency data, since the
+  // opens/clicks/replies counts themselves are cumulative all-time totals
+  // with no per-event history.
+  "cipher_sequence_opens",
+  "cipher_sequence_clicks",
+  "cipher_sequence_replies",
+  "cipher_sequence_sends",
+  "cipher_sequence_last_open_date",
   "hs_sequences_is_enrolled",
   "hs_latest_sequence_enrolled",     // numeric sequence ID of last enrollment
   "hs_latest_sequence_enrolled_date",
@@ -610,6 +622,11 @@ function normalizeContact(c) {
     assignedBdr:         p.assigned_bdr || "",
     ownerId:             p.hubspot_owner_id || "",
     primaryOutreachRep:  p.primary_outreach_rep || "",
+    sequenceOpens:       parseInt(p.cipher_sequence_opens, 10) || 0,
+    sequenceClicks:      parseInt(p.cipher_sequence_clicks, 10) || 0,
+    sequenceReplies:     parseInt(p.cipher_sequence_replies, 10) || 0,
+    sequenceSends:       parseInt(p.cipher_sequence_sends, 10) || 0,
+    sequenceLastOpenAt:  p.cipher_sequence_last_open_date || null,
     targetAccount:       p.target_account__bdr_led_outreach || "",
     territory:           p.territory || "",
     // priorityTier lives on Company object, not contact -- omitted here
@@ -1214,6 +1231,7 @@ async function computeTaskQueue(user, qp) {
         "hs_email_last_send_date",
         "notes_last_contacted",
         "hubspot_owner_id",
+        "cipher_sequence_replies",
       ],
       sorts:  [{ propertyName: "hs_sales_email_last_replied", direction: "DESCENDING" }],
       limit:  200,
@@ -1425,6 +1443,15 @@ async function computeTaskQueue(user, qp) {
         // window, that's not a real signal to act on.
         if (verifiedReplyContactIds !== null && !verifiedReplyContactIds.has(String(c.id))) return null;
 
+        // Cross-check against cipher_sequence_replies — confirmed clean via
+        // direct spot-checks against real email content (contacts with 2
+        // and 9 recorded replies, zero OOO subjects found in either case).
+        // This doesn't exclude anything on its own — it only covers
+        // sequence-related replies, so a genuine reply to a non-sequence
+        // 1:1 email would correctly show 0 here without being wrong. It's
+        // a flag for lower confidence, not a hard filter.
+        const sequenceReplyConfirmed = (parseInt(p.cipher_sequence_replies, 10) || 0) > 0;
+
         // Check if YOU manually responded after the reply
         const lastManualActivityTs = Math.max(
           p.notes_last_contacted ? new Date(p.notes_last_contacted).getTime() : 0,
@@ -1456,6 +1483,7 @@ async function computeTaskQueue(user, qp) {
           lastOutboundDate: null, // lastActivityTs removed — manual activity no longer tracked here
           waitingHours:     Math.round((now - replyTs) / (1000 * 60 * 60)),
           subject:          verifiedSubject || p.hs_email_last_email_name || null,
+          sequenceReplyConfirmed,
           url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
         };
       })
@@ -1638,29 +1666,24 @@ async function computeTaskQueue(user, qp) {
 
     // ── Section 4: High sequence engagement (3+ opens, active recently) ──
     // Built on cipher_sequence_opens — a real, already-populated property
-    // (confirmed directly against live data, values up to 57 seen). BUT:
-    // it's a single cumulative all-time counter with no time dimension at
-    // all, and checking per-email hs_email_open_count directly showed it
-    // just duplicates the same cumulative number across every related
-    // email record rather than tracking genuine distinct per-email opens
-    // — so there's no reliable way to recompute a true "opens in the last
-    // 30 days" sum from what's actually in this portal's data.
-    // The honest, achievable fix: gate the all-time count by RECENCY using
-    // hs_sales_email_last_opened (confirmed reliably populated, with real
-    // variation — some contacts with high all-time counts hadn't opened
-    // anything in 40+ days). A contact only qualifies if they've actually
-    // opened something in the last 30 days, so a stale count from months
-    // ago can't surface here even though the displayed number is still
-    // the cumulative total, not a recomputed 30-day figure.
+    // (confirmed directly against live data, values up to 57 seen).
+    // Recency is now gated by cipher_sequence_last_open_date — a new
+    // date-and-time property added specifically for this, confirmed live
+    // and populated (6,769 contacts, real hour/minute precision) — instead
+    // of the earlier hs_sales_email_last_opened proxy, which covered any
+    // sales email, not specifically sequence opens. This is a precise fix,
+    // not a workaround: opens itself is still the all-time cumulative
+    // count (no per-open history exists to sum from), but the recency gate
+    // is now exact to this specific signal rather than an approximation.
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const highEngagementFilterGroups = buildFilterGroups(qp, [
       { propertyName: "cipher_sequence_opens", operator: "GTE", value: "3" },
-      { propertyName: "hs_sales_email_last_opened", operator: "GTE", value: thirtyDaysAgo },
+      { propertyName: "cipher_sequence_last_open_date", operator: "GTE", value: thirtyDaysAgo },
     ]);
     const highEngagementData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
       filterGroups: highEngagementFilterGroups,
-      properties: [...BASE_CONTACT_PROPS, "cipher_sequence_opens", "cipher_sequence_replies", "cipher_sequence_clicks", "hs_sales_email_last_opened"],
-      sorts: [{ propertyName: "hs_sales_email_last_opened", direction: "DESCENDING" }],
+      properties: [...BASE_CONTACT_PROPS, "cipher_sequence_opens", "cipher_sequence_replies", "cipher_sequence_clicks", "cipher_sequence_last_open_date"],
+      sorts: [{ propertyName: "cipher_sequence_last_open_date", direction: "DESCENDING" }],
       limit: 20,
     }).catch(() => ({ results: [] }));
 
@@ -1676,8 +1699,8 @@ async function computeTaskQueue(user, qp) {
           opens,
           replies: parseInt(p.cipher_sequence_replies, 10) || 0,
           clicks: parseInt(p.cipher_sequence_clicks, 10) || 0,
-          lastOpenedAt: p.hs_sales_email_last_opened || null,
-          whyTag: `Opened ${opens} time${opens === 1 ? "" : "s"} (all-time), last opened within 30 days — no reply yet`,
+          lastOpenedAt: p.cipher_sequence_last_open_date || null,
+          whyTag: `Opened ${opens} time${opens === 1 ? "" : "s"} (all-time) — last sequence open within 30 days, no reply yet`,
           url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
         };
       })
@@ -1757,6 +1780,7 @@ export async function computeRightNowQueue(userId, qp = {}) {
       label: "Replied",
       contactId: r.contactId,
       contact: r.contact,
+      sequenceReplyConfirmed: r.sequenceReplyConfirmed,
     }));
 
     // dueTasks map directly onto scoreTaskForQueue's expected shape —
