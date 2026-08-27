@@ -25,7 +25,14 @@
 import { withAuth } from "./utils/auth.js";
 
 const ACCOUNT = process.env.AZURE_STORAGE_ACCOUNT_NAME;
-const SAS = process.env.AZURE_STORAGE_SAS_TOKEN;
+// Dedicated, read-only, container-scoped SAS token for onboarding-cc —
+// deliberately separate from AZURE_STORAGE_SAS_TOKEN (Cipher's own token
+// for its own container). Azure returns a plain 404, not a permission
+// error, when a token tries to reach a container it isn't scoped for —
+// that's what was actually happening before this token existed: requests
+// looked like clean "not found" results at every resolution tier instead
+// of the real cause, a scope mismatch.
+const SAS = process.env.AZURE_ONBOARDING_SAS_TOKEN;
 // Separate container from Cipher's own data — same Azure account and SAS
 // token Cipher already uses elsewhere, just pointed at Onboarding's
 // container. Matches the default in Onboarding's own azureBlob.js.
