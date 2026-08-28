@@ -718,7 +718,7 @@ export default function RightNowView({ getToken, user }) {
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                   <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px', color: 'var(--pin-color)' }}>HIGH ENGAGEMENT — 3+ SEQUENCE OPENS</span>
-                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>· all-time count, active within last 30 days</span>
+                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>· opens on their current/latest sequence, resets when a new one starts</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 22 }}>
                   {highEngagement.map(item => {
@@ -741,8 +741,9 @@ export default function RightNowView({ getToken, user }) {
                         <div style={{ fontSize: 13, fontWeight: 500 }}><NameCompanyLine item={{ contact: item.contact }} /></div>
                         <RepInfoLine item={{ contact: item.contact }} />
                         <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 2 }}>
-                          {item.opens} opens all-time{item.clicks > 0 ? ` · clicked ${item.clicks}x` : ''}{item.replies > 0 ? ` · ${item.replies} repl${item.replies === 1 ? 'y' : 'ies'}` : ' · no reply yet'}
+                          {item.opens} opens on latest sequence{item.clicks > 0 ? ` · clicked ${item.clicks}x` : ''}{item.replies > 0 ? ` · ${item.replies} repl${item.replies === 1 ? 'y' : 'ies'}` : ' · no reply yet'}
                           {item.lastOpenedAt && <span style={{ color: 'var(--text-tertiary)' }}> · last opened {timeAgo(item.lastOpenedAt)}</span>}
+                          {typeof item.lifetimeOpens === 'number' && <span style={{ color: 'var(--text-tertiary)' }}> · {item.lifetimeOpens} all-time</span>}
                         </div>
                       </div>
                       <button onClick={(e) => { e.stopPropagation(); if (!viewingUserId) togglePin(item.id, name) }}
