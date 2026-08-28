@@ -264,6 +264,10 @@ const BASE_CONTACT_PROPS = [
   "cipher_sequence_replies",
   "cipher_sequence_sends",
   "cipher_sequence_last_open_date",
+  "cipher_sequence_opens_current",
+  "cipher_sequence_clicks_current",
+  "cipher_sequence_replies_current",
+  "cipher_sequence_sends_current",
   "hs_sequences_is_enrolled",
   "hs_latest_sequence_enrolled",     // numeric sequence ID of last enrollment
   "hs_latest_sequence_enrolled_date",
@@ -1664,25 +1668,24 @@ async function computeTaskQueue(user, qp) {
         return !bdr || bdr === repName;
       });
 
-    // ── Section 4: High sequence engagement (3+ opens, active recently) ──
-    // Built on cipher_sequence_opens — a real, already-populated property
-    // (confirmed directly against live data, values up to 57 seen).
-    // Recency is now gated by cipher_sequence_last_open_date — a new
-    // date-and-time property added specifically for this, confirmed live
-    // and populated (6,769 contacts, real hour/minute precision) — instead
-    // of the earlier hs_sales_email_last_opened proxy, which covered any
-    // sales email, not specifically sequence opens. This is a precise fix,
-    // not a workaround: opens itself is still the all-time cumulative
-    // count (no per-open history exists to sum from), but the recency gate
-    // is now exact to this specific signal rather than an approximation.
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    // ── Section 4: High sequence engagement (3+ opens on latest sequence) ─
+    // Now built on cipher_sequence_opens_current — a new property that
+    // resets to 0 on each fresh sequence enrollment (via a dedicated reset
+    // workflow), unlike the original cipher_sequence_opens, which just
+    // accumulates forever across every sequence a contact has ever been
+    // in. Confirmed live and correct with real data: contacts enrolled in
+    // a new sequence this week show current opens genuinely lower than
+    // their lifetime total, proving the reset actually happened rather
+    // than the two numbers just coincidentally matching.
+    // This also means the recency gate from the previous version isn't
+    // needed anymore — "3+ opens" now inherently means 3+ opens on
+    // whatever sequence is most recent, not a stale count from months ago.
     const highEngagementFilterGroups = buildFilterGroups(qp, [
-      { propertyName: "cipher_sequence_opens", operator: "GTE", value: "3" },
-      { propertyName: "cipher_sequence_last_open_date", operator: "GTE", value: thirtyDaysAgo },
+      { propertyName: "cipher_sequence_opens_current", operator: "GTE", value: "3" },
     ]);
     const highEngagementData = await hsPost(user.userId, "/crm/v3/objects/contacts/search", {
       filterGroups: highEngagementFilterGroups,
-      properties: [...BASE_CONTACT_PROPS, "cipher_sequence_opens", "cipher_sequence_replies", "cipher_sequence_clicks", "cipher_sequence_last_open_date"],
+      properties: [...BASE_CONTACT_PROPS, "cipher_sequence_opens_current", "cipher_sequence_replies_current", "cipher_sequence_clicks_current", "cipher_sequence_opens", "cipher_sequence_last_open_date"],
       sorts: [{ propertyName: "cipher_sequence_last_open_date", direction: "DESCENDING" }],
       limit: 20,
     }).catch(() => ({ results: [] }));
@@ -1691,16 +1694,18 @@ async function computeTaskQueue(user, qp) {
       .map(c => {
         const p = c.properties || {};
         const info = normalizeContact(c);
-        const opens = parseInt(p.cipher_sequence_opens, 10) || 0;
+        const opens = parseInt(p.cipher_sequence_opens_current, 10) || 0;
+        const lifetimeOpens = parseInt(p.cipher_sequence_opens, 10) || 0;
         return {
           id: `hiseq-${c.id}`,
           contactId: c.id,
           contact: info,
           opens,
-          replies: parseInt(p.cipher_sequence_replies, 10) || 0,
-          clicks: parseInt(p.cipher_sequence_clicks, 10) || 0,
+          lifetimeOpens,
+          replies: parseInt(p.cipher_sequence_replies_current, 10) || 0,
+          clicks: parseInt(p.cipher_sequence_clicks_current, 10) || 0,
           lastOpenedAt: p.cipher_sequence_last_open_date || null,
-          whyTag: `Opened ${opens} time${opens === 1 ? "" : "s"} (all-time) — last sequence open within 30 days, no reply yet`,
+          whyTag: `Opened ${opens} time${opens === 1 ? "" : "s"} on their latest sequence — no reply yet`,
           url: `https://app.hubspot.com/contacts/39921549/record/0-1/${c.id}`,
         };
       })
