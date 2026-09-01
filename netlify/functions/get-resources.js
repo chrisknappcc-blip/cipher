@@ -57,6 +57,26 @@ async function readJson(blobName, fallback = null) {
 
 export const handler = async (event, context) => {
   return withAuth(async (event, context, user) => {
+    // TEMPORARY diagnostic — GET ?debug=1. Reveals whether this function
+    // actually sees a value for AZURE_ONBOARDING_SAS_TOKEN at all, without
+    // exposing the real value — just its length and first/last few
+    // characters, enough to confirm identity. Safe to remove once the
+    // 403 is resolved; this doesn't touch any real functionality.
+    const qpDebug = event.queryStringParameters || {};
+    if (qpDebug.debug === "1") {
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          accountSet: !!ACCOUNT,
+          accountValue: ACCOUNT || null,
+          sasSet: !!SAS,
+          sasLength: SAS ? SAS.length : 0,
+          sasPreview: SAS ? `${SAS.slice(0, 8)}...${SAS.slice(-8)}` : null,
+          containerValue: CONTAINER,
+        }),
+      };
+    }
+
     if (!ACCOUNT || !SAS) {
       return { statusCode: 500, body: JSON.stringify({ error: "Azure storage not configured" }) };
     }
