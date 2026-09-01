@@ -24,7 +24,15 @@
 
 import { withAuth } from "./utils/auth.js";
 
-const ACCOUNT = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+// Dedicated account name for Onboarding's storage — deliberately NOT
+// reusing Cipher's own AZURE_STORAGE_ACCOUNT_NAME. Confirmed via a live
+// diagnostic that these are two genuinely different storage accounts
+// ("ciphercc" for Cipher's own data vs "carepathiqdata" for Onboarding's)
+// — a SAS token is cryptographically signed for one specific account, so
+// pointing it at the wrong account's URL always fails with a 403
+// regardless of how correct every other parameter is. That mismatch was
+// the actual root cause of every 403 hit while debugging this.
+const ACCOUNT = process.env.AZURE_ONBOARDING_ACCOUNT_NAME;
 // Dedicated, read-only, container-scoped SAS token for onboarding-cc —
 // deliberately separate from AZURE_STORAGE_SAS_TOKEN (Cipher's own token
 // for its own container). Azure returns a plain 404, not a permission
