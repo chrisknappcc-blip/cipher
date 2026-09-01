@@ -205,6 +205,20 @@ const HS_CLIENT_SECRET = process.env.HUBSPOT_CLIENT_SECRET;
 const HS_REDIRECT_URI  = process.env.HUBSPOT_REDIRECT_URI;
 const HS_API           = "https://api.hubapi.com";
 
+// Trimmed from 13 scopes to these 8 (Aug/Sept 2026 audit) — every one
+// removed was confirmed via direct code search to have zero actual API
+// usage: automation (no Workflows API calls anywhere), content (the one
+// exception checked carefully — a Marketing Email reporting feature did
+// use it, deliberately removed along with the scope rather than kept,
+// since that scope cluster also demands unrelated seat permissions like
+// Blog Writer and Landing Pages that a new BDR's HubSpot seat is unlikely
+// to have — a real, recurring signup-friction cost for an occasional-use
+// reporting tab), e-commerce (no products/orders calls), and both
+// marketing_events scopes (dead feature — the only remaining reference
+// in the code is a comment noting it was removed for performance).
+// crm.lists.read is kept even though nothing in Cipher's own code
+// currently calls the Lists API — that one was a deliberate choice to
+// leave room for a possible future list-based feature, not an oversight.
 const HS_SCOPES = [
   "crm.objects.contacts.read",
   "crm.objects.contacts.write",
@@ -213,11 +227,6 @@ const HS_SCOPES = [
   "timeline",
   "sales-email-read",
   "crm.lists.read",
-  "automation",
-  "crm.objects.marketing_events.read",
-  "crm.objects.marketing_events.write",
-  "content",
-  "e-commerce",
   "oauth",
 ].join(" ");
 
@@ -5188,10 +5197,27 @@ export const handler = async (event, context) => {
         }
 
         // ── MARKETING ─────────────────────────────────────────────────────────
-        // /marketing/v3/emails returns email records (no stats).
-        // Stats require a separate call to /marketing/v3/emails/{id}/statistics.
-        // We fetch emails first, then batch-fetch stats for the ones in-period.
+        // Deliberately disabled — the `content` scope this depended on
+        // (/marketing/v3/emails) was removed in the Aug/Sept 2026 HubSpot
+        // permission audit. That scope also demanded unrelated HubSpot
+        // seat permissions (Blog Writer, Landing Pages, Design Tools,
+        // Knowledge Base, URL Redirects) that a new BDR's seat is unlikely
+        // to have — a real, recurring signup-friction cost for a reporting
+        // tab that was only used occasionally. The tradeoff was decided
+        // deliberately in favor of frictionless onboarding: view Marketing
+        // Email stats directly in HubSpot's own reporting instead.
+        // The original implementation below is left in place, commented
+        // out, in case this scope is ever reinstated and this is wanted
+        // back — it was working code, not abandoned code.
         if (section === "marketing") {
+          return ok({
+            section: "marketing",
+            disabled: true,
+            message: "Marketing Email reporting was intentionally disabled to keep HubSpot sign-in permissions minimal. View Marketing Email stats directly in HubSpot's own reporting instead.",
+            emails: [],
+          });
+        }
+        if (false) {
 
           // Owner ID → user ID map (same for Chris; may differ for others)
           // We match on createdById which equals userId in HubSpot
