@@ -226,6 +226,65 @@ function InviteScreen({ inviteToken, onLogin }) {
   )
 }
 
+function MandatoryPasswordChange({ user, onDone }) {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm]   = useState('')
+  const [saving, setSaving]     = useState(false)
+  const [error, setError]       = useState(null)
+
+  const handleSubmit = async () => {
+    if (password.length < 6)  { setError('Password must be at least 6 characters.'); return }
+    if (password !== confirm) { setError("Passwords don't match."); return }
+    setSaving(true); setError(null)
+    try {
+      // Step 1: actually set the real password via Netlify Identity itself.
+      await netlifyIdentity.currentUser().update({ password })
+
+      // Step 2: clear the must_change_password flag server-side. This has
+      // to be a separate call — app_metadata can only ever be set by an
+      // admin/service credential, never through the user's own update()
+      // call above, which is exactly what makes the flag a real enforced
+      // gate rather than something a new user could quietly bypass.
+      const jwt = await netlifyIdentity.currentUser().jwt()
+      const r = await fetch('/.netlify/functions/clear-password-flag', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${jwt}` },
+      })
+      if (!r.ok) throw new Error('Password was set, but could not clear the change-required flag — contact an admin if this screen keeps appearing.')
+
+      onDone()
+    } catch (e) {
+      setError(e.message || 'Could not update password.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const box   = { background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:'2.5rem', maxWidth:420, width:'100%', textAlign:'center' }
+  const input = { width:'100%', padding:'10px 12px', marginBottom:10, border:'1px solid var(--border)', borderRadius:'var(--radius)', background:'var(--bg)', color:'var(--text)', fontSize:14, boxSizing:'border-box' }
+
+  return (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'var(--bg)' }}>
+      <div style={box}>
+        <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8 }}>CarePathIQ</div>
+        <h2 style={{ fontSize:20, fontWeight:500, color:'var(--text)', marginBottom:4 }}>Set a new password</h2>
+        <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1.5rem' }}>
+          You're signing in with a temporary password. Choose a new one to continue — this is required before you can use Cipher.
+        </p>
+        <form onSubmit={e => { e.preventDefault(); handleSubmit() }} style={{ width:'100%' }}>
+          <input type="password" placeholder="New password" value={password} onChange={e => setPassword(e.target.value)} style={input} autoComplete="new-password" />
+          <input type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)} style={{ ...input, marginBottom:16 }} autoComplete="new-password" />
+          {error && <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{error}</div>}
+          <button type="submit" disabled={saving || !password || !confirm}
+            style={{ width:'100%', padding:'10px 24px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:14, fontWeight:500, cursor:'pointer', opacity: (saving || !password || !confirm) ? 0.6 : 1 }}>
+            {saving ? 'Saving…' : 'Set Password & Continue'}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [user,       setUser]       = useState(null)
   const [isLoaded,   setIsLoaded]   = useState(false)
@@ -368,6 +427,19 @@ export default function App() {
           </button>
         </div>
       </div>
+    )
+  }
+
+  // Mandatory password change — set by admin-create-user.js on any account
+  // created or fixed via the admin panel. Checked before the HubSpot
+  // connection step deliberately: a temp password shouldn't be usable for
+  // anything beyond setting a real one, not even connecting HubSpot.
+  if (user.app_metadata?.must_change_password) {
+    return (
+      <MandatoryPasswordChange
+        user={user}
+        onDone={() => setUser(u => ({ ...u, app_metadata: { ...u.app_metadata, must_change_password: false } }))}
+      />
     )
   }
 

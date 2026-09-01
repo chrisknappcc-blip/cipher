@@ -1078,6 +1078,108 @@ function ContactIntelPanel({ user, safeFetch }) {
 
 
 // ─── Bot Opens Log Panel ──────────────────────────────────────────────────────
+// ─── Add Team Member Panel ─────────────────────────────────────────────────
+// Calls admin-create-user.js directly — bypasses Netlify Identity's normal
+// email-invite flow entirely, since that link gets silently consumed by
+// corporate email security (Microsoft Defender's Safe Links, most
+// commonly) before the real person ever sees it. This creates the account
+// already confirmed, with a temp password you hand them directly.
+function AddTeamMemberPanel({ safeFetch }) {
+  const [open, setOpen]       = useState(false)
+  const [email, setEmail]     = useState('')
+  const [loading, setLoading] = useState(false)
+  const [result, setResult]   = useState(null)
+  const [error, setError]     = useState(null)
+  const [copied, setCopied]   = useState(false)
+
+  const handleCreate = async () => {
+    const trimmed = email.trim().toLowerCase()
+    if (!trimmed || !trimmed.includes('@')) { setError('Enter a valid email address.'); return }
+    setLoading(true); setError(null); setResult(null); setCopied(false)
+    try {
+      const res = await fetch('/.netlify/functions/admin-create-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await window.netlifyIdentity.currentUser().jwt()}` },
+        body: JSON.stringify({ email: trimmed }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+      setResult(data)
+      setEmail('')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const copyCredentials = () => {
+    if (!result) return
+    navigator.clipboard?.writeText(`Email: ${result.email}\nTemporary password: ${result.password}`)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div style={{ marginBottom:'1.25rem' }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none',
+          cursor:'pointer', padding:'2px 0', display:'flex', alignItems:'center', gap:5 }}>
+        <span style={{ fontSize:10 }}>{open ? '▼' : '▶'}</span>
+        Add Team Member
+      </button>
+      {open && (
+        <div style={{ marginTop:8, padding:'14px 16px', background:'var(--bg-panel)',
+          border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', maxWidth:460 }}>
+          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10, lineHeight:1.5 }}>
+            Creates the account fully confirmed with a temporary password — no email invite link involved,
+            so there's nothing for a corporate email scanner to consume before the real person sees it.
+            They'll be required to change this password the first time they sign in.
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <input value={email} onChange={e => setEmail(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleCreate()}
+              placeholder="new.person@carecontinuity.com"
+              style={{ flex:1, padding:'8px 10px', border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                background:'var(--bg)', color:'var(--text)', fontSize:13 }} />
+            <button onClick={handleCreate} disabled={loading || !email.trim()}
+              style={{ padding:'8px 16px', background: loading || !email.trim() ? 'var(--bg-secondary)' : 'var(--accent)',
+                color: loading || !email.trim() ? 'var(--text-tertiary)' : '#fff',
+                border:'none', borderRadius:'var(--radius)', fontSize:13, fontWeight:500,
+                cursor: loading || !email.trim() ? 'not-allowed' : 'pointer', whiteSpace:'nowrap' }}>
+              {loading ? 'Creating…' : 'Create User'}
+            </button>
+          </div>
+
+          {error && (
+            <div style={{ marginTop:10, fontSize:12, color:'var(--red)' }}>{error}</div>
+          )}
+
+          {result && (
+            <div style={{ marginTop:12, padding:'10px 12px', background:'var(--bg-secondary)', borderRadius:'var(--radius)' }}>
+              <div style={{ fontSize:11, fontWeight:600, color: result.action === 'updated' ? 'var(--amber, #D97706)' : 'var(--green, #16a34a)', marginBottom:6 }}>
+                {result.action === 'updated'
+                  ? '✓ Found an existing pending invite and fixed it directly'
+                  : '✓ New account created'}
+              </div>
+              <div style={{ fontSize:12, color:'var(--text)', fontFamily:'monospace' }}>{result.email}</div>
+              <div style={{ fontSize:12, color:'var(--text)', fontFamily:'monospace', marginTop:2 }}>{result.password}</div>
+              <button onClick={copyCredentials}
+                style={{ marginTop:8, fontSize:11, padding:'4px 10px', background:'none',
+                  border:'1px solid var(--border)', borderRadius:'var(--radius)', color:'var(--text-secondary)', cursor:'pointer' }}>
+                {copied ? '✓ Copied' : 'Copy email + password'}
+              </button>
+              <div style={{ fontSize:11, color:'var(--text-tertiary)', marginTop:8 }}>
+                Send this to them directly (text, Slack, in person) — they'll be prompted to set their own password on first login.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function BotLogPanel({ entries = [], onClear }) {
   const [view, setView] = useState('chart') // 'chart' | 'domains' | 'list'
 
@@ -2320,6 +2422,11 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
                deleted when HubSpot's OAuth scopes were trimmed down. Primary
                Outreach Rep is being assigned manually for now. */}
 
+
+            {/* ── Add Team Member ── */}
+            {currentUserName === 'Chris Knapp' && (
+              <AddTeamMemberPanel safeFetch={safeFetch} />
+            )}
 
             {/* ── Bot Opens Log ── */}
             {currentUserName === 'Chris Knapp' && (
