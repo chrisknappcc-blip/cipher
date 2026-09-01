@@ -1303,163 +1303,17 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
   const [botSignals, setBotSignals]   = useState([])
   const [contacts, setContacts]           = useState([])
   const [contactsTotal, setContactsTotal] = useState(0)
-  const [repSyncCoverage, setRepSyncCoverage] = useState({ remaining: null, total: null, loading: false })
-
-  const fetchSyncCoverage = async (repName) => {
-    if (!repName) return
-    setRepSyncCoverage(c => ({ ...c, loading: true }))
-    try {
-      const [totalRes, remainRes] = await Promise.all([
-        safeFetch(`/api/hubspot/sync-primary-rep`, { method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ batchSize:1, dryRun:true, repFilter:repName, forceRefresh:true }) }),
-        safeFetch(`/api/hubspot/sync-primary-rep`, { method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ batchSize:1, dryRun:true, repFilter:repName, forceRefresh:false }) }),
-      ])
-      setRepSyncCoverage({ remaining: remainRes.total ?? null, total: totalRes.total ?? null, loading: false })
-    } catch { setRepSyncCoverage(c => ({ ...c, loading: false })) }
-  }
-
-  const [repSyncState, setRepSyncState]   = useState(() => {
-    try {
-      const saved = sessionStorage.getItem('repSyncState')
-      if (saved) { const s = JSON.parse(saved); return { ...s, running:false, progress:'' } }
-    } catch {}
-    return { running:false, done:false, updated:0, skipped:0, total:0, progress:'' }
-  })
-  const [adminOpen, setAdminOpen]           = useState(false)
   const [botLogOpen, setBotLogOpen]         = useState(false)
   const [botLogData, setBotLogData]         = useState(null)
   const [botLogLoading, setBotLogLoading]   = useState(false)
-  const [previewData, setPreviewData]       = useState(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
   const [hpOverrides, setHpOverrides] = useState(() => {
     try { return JSON.parse(localStorage.getItem('cipher_hp_overrides') || '{}') }
     catch { return {} }
   })
   const [outlookData, setOutlookData]       = useState({ connected: false, emails: {} })
   const [outlookLoading, setOutlookLoading] = useState(false)
-  const saveRepSyncState = (s) => {
-    setRepSyncState(s)
-    try { sessionStorage.setItem('repSyncState', JSON.stringify(s)) } catch {}
-  }
-  const runRepSync = async (fullCrm = false, forceRefresh = false) => {
-    saveSyncMode(fullCrm ? 'fullcrm' : 'gold')
-    saveRepSyncState({ running:true, done:false, updated:0, skipped:0, total:0, progress:'Starting…' })
-    let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0, crmCursor = null
-    try {
-      while (true) {
-        saveRepSyncState({ running:true, done:false, updated:totalUpdated, skipped:totalSkipped,
-          total:grandTotal, progress: grandTotal > 0
-            ? `Processing ${(totalUpdated+totalSkipped).toLocaleString()} of ${grandTotal.toLocaleString()} contacts…`
-            : fullCrm ? 'Fetching CRM contacts…' : 'Fetching Gold contacts…'
-        })
-        const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batchStart, batchSize: 100, fullCrm, forceRefresh, crmCursor }),
-        })
-        totalUpdated += res.updated || 0
-        totalSkipped += res.skipped || 0
-        grandTotal    = res.total   || grandTotal
-        if (res.done || !res.hasMore) break
-        // For full CRM: use cursor for next contact page; batchStart resets to 0 each page
-        if (fullCrm && res.nextCrmCursor) {
-          crmCursor  = res.nextCrmCursor
-          batchStart = 0
-        } else {
-          batchStart = res.nextBatch
-        }
-        await new Promise(r => setTimeout(r, 300))
-      }
-      saveRepSyncState({ running:false, done:true, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:'' })
-    } catch(e) {
-      saveRepSyncState({ running:false, done:false, updated:totalUpdated, skipped:totalSkipped, total:grandTotal, progress:`Error: ${e.message}` })
-    }
-  }
-  const runDryRun = async () => {
-    setPreviewLoading(true)
-    setPreviewData(null)
-    try {
-      const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ batchStart: 0, batchSize: 50, fullCrm: false, dryRun: true }),
-      })
-      setPreviewData(res)
-    } catch(e) {
-      setPreviewData({ error: e.message })
-    } finally {
-      setPreviewLoading(false)
-    }
-  }
 
-  // Run preview/sync for the logged-in user's contacts only
-  const myRepName = _userFullName
-    ? (TEAM_MEMBERS.find(m => m.name.toLowerCase() === _userFullName.toLowerCase() ||
-        (_userFirstName && m.name.toLowerCase().startsWith(_userFirstName.toLowerCase())))?.name || null)
-    : null
 
-  const runDryRunMine = async () => {
-    if (!myRepName) return
-    setPreviewLoading(true)
-    setPreviewData(null)
-    try {
-      const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ batchStart: 0, batchSize: 50, fullCrm: false, dryRun: true, repFilter: myRepName }),
-      })
-      setPreviewData(res)
-    } catch(e) {
-      setPreviewData({ error: e.message })
-    } finally {
-      setPreviewLoading(false)
-    }
-  }
-
-  const runRepSyncMine = async (forceRefresh = false) => {
-    if (!myRepName) return
-    saveRepSyncState({ running: true, done: false, updated: 0, skipped: 0, total: 0, progress: forceRefresh ? `Force rerunning all ${myRepName} contacts…` : `Starting sync for ${myRepName}…` })
-    let totalUpdated = 0, totalSkipped = 0, grandTotal = 0, batchStart = 0
-    try {
-      while (true) {
-        // batchSize 100: reverse lookup pre-builds AE map once per call (~2-3s), then contact lookup is instant
-        const res = await safeFetch(`/api/hubspot/sync-primary-rep`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batchStart, batchSize: 100, fullCrm: false, dryRun: false, repFilter: myRepName, forceRefresh }),
-        })
-        totalUpdated += res.updated  || 0
-        totalSkipped += res.skipped  || 0
-        if (!grandTotal && res.total) grandTotal = res.total
-        const processed = batchStart + (res.batchEnd - res.batchStart || 25)
-        saveRepSyncState({
-          running:  true,
-          done:     false,
-          updated:  totalUpdated,
-          skipped:  totalSkipped,
-          total:    grandTotal,
-          progress: `Batch ${Math.ceil(batchStart/100)+1} — ${Math.min(batchStart+100,grandTotal||batchStart+100).toLocaleString()} of ${grandTotal ? grandTotal.toLocaleString() : '…'} contacts processed · ${totalUpdated} updated`,
-        })
-        if (res.done || !res.hasMore) break
-        batchStart = res.nextBatch ?? (batchStart + 25)
-      }
-      saveRepSyncState({ running: false, done: true, updated: totalUpdated, skipped: totalSkipped, total: grandTotal,
-        progress: `Done — ${totalUpdated.toLocaleString()} updated, ${totalSkipped.toLocaleString()} unchanged out of ${grandTotal.toLocaleString()} contacts` })
-      fetchSyncCoverage(myRepName)
-    } catch(e) {
-      saveRepSyncState({ running: false, done: false, updated: totalUpdated, skipped: totalSkipped, total: grandTotal,
-        progress: `Error after ${totalUpdated} updates: ${e.message}` })
-    }
-  }
-
-  const [syncMode, setSyncMode]             = useState(() => {
-    try { return sessionStorage.getItem('syncMode') || 'gold' } catch { return 'gold' }
-  })
-  const saveSyncMode = (m) => {
-    setSyncMode(m)
-    try { sessionStorage.setItem('syncMode', m) } catch {}
-  }
   const [feed, setFeed]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [signalsHasMore, setSignalsHasMore] = useState(false)
@@ -2043,7 +1897,6 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     } catch { /* polling errors are silent */ }
   }, [lastPollTime, filterBdr])
 
-  useEffect(() => { if (myRepName) fetchSyncCoverage(myRepName) }, [myRepName])  // eslint-disable-line
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => { fetchTodos(); syncTodos() }, [fetchTodos, syncTodos])
@@ -2462,196 +2315,11 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
               <MetricCard label="Bot opens filtered" value={botCount}          sub="Not shown in feed"   subType="neutral" />
             </div>
 
-            {/* Admin panel — only visible to Chris Knapp */}
-            {currentUserName === 'Chris Knapp' && (
-              <div style={{ marginBottom:'1.25rem' }}>
-                <button onClick={() => setAdminOpen(o => !o)}
-                  style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none',
-                    cursor:'pointer', padding:'2px 0', display:'flex', alignItems:'center', gap:5 }}>
-                  <span style={{ fontSize:10 }}>{adminOpen ? '▼' : '▶'}</span>
-                  Admin tools
-                </button>
-                {adminOpen && (
-                    <div style={{ marginTop:8, padding:'10px 14px', background:'var(--bg-panel)',
-                      border:'1px solid var(--border)', borderRadius:'var(--radius-lg)',
-                      display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
-                      <div style={{ flex:1, minWidth:200 }}>
-                        <div style={{ fontSize:12, fontWeight:600, color:'var(--text)', marginBottom:2 }}>
-                          Primary Outreach Rep Sync
-                        </div>
-                        <div style={{ fontSize:11, color:'var(--text-tertiary)' }}>
-                          {repSyncState.running
-                            ? repSyncState.progress
-                            : repSyncState.done
-                            ? `✓ Complete — ${repSyncState.updated.toLocaleString()} updated · ${repSyncState.skipped.toLocaleString()} unchanged`
-                            : 'Sets primary_outreach_rep based on most recent engagement owner. AE activity overrides BDR. Existing customers and Do Not Contact skipped.'}
-                        </div>
-                        {/* Coverage bar */}
-                        {repSyncCoverage.total > 0 && (
-                          <div style={{ marginTop:5 }}>
-                            <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:'var(--text-tertiary)', marginBottom:3 }}>
-                              <span>
-                                {repSyncCoverage.loading ? 'Checking…' :
-                                 repSyncCoverage.remaining === 0 ? '✓ All contacts stamped' :
-                                 `${(repSyncCoverage.total - (repSyncCoverage.remaining||0)).toLocaleString()} of ${repSyncCoverage.total.toLocaleString()} stamped`}
-                              </span>
-                              {!repSyncCoverage.loading && repSyncCoverage.remaining > 0 && (
-                                <span style={{ color:'var(--accent)' }}>{repSyncCoverage.remaining.toLocaleString()} remaining</span>
-                              )}
-                            </div>
-                            <div style={{ height:4, background:'var(--border)', borderRadius:2, overflow:'hidden' }}>
-                              <div style={{
-                                height:'100%', borderRadius:2,
-                                background: repSyncCoverage.remaining === 0 ? 'var(--green)' : 'var(--accent)',
-                                width: `${Math.round(((repSyncCoverage.total - (repSyncCoverage.remaining||0)) / repSyncCoverage.total) * 100)}%`,
-                                transition: 'width 0.5s ease',
-                              }} />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                      {repSyncState.running && (
-                        <div style={{ fontSize:11, color:'var(--accent)', flexShrink:0 }}>
-                          {repSyncState.total > 0 ? `${Math.round(((repSyncState.updated+repSyncState.skipped)/repSyncState.total)*100)}%` : '…'}
-                        </div>
-                      )}
-                      <div style={{ display:'flex', gap:6, flexShrink:0, flexWrap:'wrap' }}>
-                        <button onClick={runDryRunMine} disabled={repSyncState.running || previewLoading || !myRepName}
-                          style={{ padding:'6px 10px', background:'none',
-                            border:'1px solid var(--accent)',
-                            color: (repSyncState.running || previewLoading || !myRepName) ? 'var(--text-tertiary)' : 'var(--accent)',
-                            borderRadius:'var(--radius)', fontSize:11,
-                            cursor: (repSyncState.running || previewLoading || !myRepName) ? 'not-allowed' : 'pointer' }}>
-                          {previewLoading ? '⟳ Previewing…' : `Preview Mine${myRepName ? ` (${myRepName.split(' ')[0]})` : ''}`}
-                        </button>
-                        <button onClick={() => runRepSyncMine(false)} disabled={repSyncState.running || !myRepName}
-                          style={{ padding:'6px 10px', background:'none',
-                            border:'1px solid var(--accent)',
-                            color: (repSyncState.running || !myRepName) ? 'var(--text-tertiary)' : 'var(--accent)',
-                            borderRadius:'var(--radius)', fontSize:11, fontWeight:600,
-                            cursor: (repSyncState.running || !myRepName) ? 'not-allowed' : 'pointer' }}>
-                          {repSyncState.running ? '⟳ Running…' : `Run Mine`}
-                        </button>
-                        <button onClick={() => runRepSyncMine(true)} disabled={repSyncState.running || !myRepName}
-                          title="Reprocess ALL contacts including ones already stamped — use to correct wrong values"
-                          style={{ padding:'6px 10px', background:'none',
-                            border:'1px solid var(--text-tertiary)',
-                            color: (repSyncState.running || !myRepName) ? 'var(--text-tertiary)' : 'var(--text-secondary)',
-                            borderRadius:'var(--radius)', fontSize:11,
-                            cursor: (repSyncState.running || !myRepName) ? 'not-allowed' : 'pointer' }}>
-                          ↺ Force Rerun
-                        </button>
-                        <button onClick={runDryRun} disabled={repSyncState.running || previewLoading}
-                          style={{ padding:'6px 10px', background:'none',
-                            border:'1px solid var(--amber, #D97706)',
-                            color: (repSyncState.running || previewLoading) ? 'var(--text-tertiary)' : '#D97706',
-                            borderRadius:'var(--radius)', fontSize:11,
-                            cursor: (repSyncState.running || previewLoading) ? 'not-allowed' : 'pointer' }}>
-                          {previewLoading ? '⟳ Previewing…' : 'Preview (Gold)'}
-                        </button>
-                        <button onClick={() => runRepSync(false)} disabled={repSyncState.running}
-                          style={{ padding:'6px 10px', background:'none', border:'1px solid var(--border)',
-                            color: repSyncState.running ? 'var(--text-tertiary)' : 'var(--text-secondary)',
-                            borderRadius:'var(--radius)', fontSize:11,
-                            cursor: repSyncState.running ? 'not-allowed' : 'pointer' }}>
-                          {repSyncState.running && syncMode === 'gold' ? '⟳ Gold…' : 'Run Gold'}
-                        </button>
-                        <button onClick={() => runRepSync(true, false)} disabled={repSyncState.running}
-                          style={{ padding:'6px 14px', background: repSyncState.running ? 'var(--bg)' : 'var(--accent)',
-                            color: repSyncState.running ? 'var(--text-tertiary)' : '#fff',
-                            border:'none', borderRadius:'var(--radius)', fontSize:12,
-                            fontWeight:600, cursor: repSyncState.running ? 'not-allowed' : 'pointer' }}>
-                          {repSyncState.running && syncMode === 'fullcrm'
-                            ? `⟳ Full CRM ${repSyncState.total > 0 ? Math.round(((repSyncState.updated+repSyncState.skipped)/repSyncState.total)*100)+'%' : '…'}`
-                            : 'Run Full CRM'}
-                        </button>
-                      </div>
+            {/* Primary Outreach Rep Sync admin panel — removed; the backend
+               endpoints it called (/sync-primary-rep, /sync-company-rep) were
+               deleted when HubSpot's OAuth scopes were trimmed down. Primary
+               Outreach Rep is being assigned manually for now. */}
 
-                    {/* ── Dry run preview results ── */}
-                    {previewData && !previewData.error && (
-                      <div style={{ marginTop:12, border:'1px solid var(--border)', borderRadius:'var(--radius)',
-                        overflow:'hidden', fontSize:11 }}>
-                        {/* Summary bar */}
-                        <div style={{ padding:'8px 12px', background:'var(--bg-secondary)',
-                          display:'flex', gap:16, flexWrap:'wrap', alignItems:'center',
-                          borderBottom:'1px solid var(--border)' }}>
-                          <span style={{ fontWeight:600 }}>Preview — first 50 Gold contacts</span>
-                          <span style={{ color: previewData.engagementHitRate > 50 ? 'var(--green, #22c55e)' : 'var(--red)' }}>
-                            Engagement data found: {previewData.engagementHitRate}%
-                          </span>
-                          <span style={{ color:'var(--accent)' }}>
-                            Would update: {previewData.wouldChange}
-                          </span>
-                          <span style={{ color:'var(--text-tertiary)' }}>
-                            Unchanged / skipped: {(previewData.preview?.length || 0) - previewData.wouldChange}
-                          </span>
-                          <button onClick={() => setPreviewData(null)}
-                            style={{ marginLeft:'auto', background:'none', border:'none',
-                              color:'var(--text-tertiary)', cursor:'pointer', fontSize:11 }}>
-                            ✕ Close
-                          </button>
-                        </div>
-                        {/* Table */}
-                        <div style={{ overflowX:'auto', maxHeight:340, overflowY:'auto' }}>
-                          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
-                            <thead>
-                              <tr style={{ background:'var(--bg-secondary)', position:'sticky', top:0 }}>
-                                {['Contact','Company','Assigned BDR','Contact Owner','Current Rep','Proposed Rep','Source','Last Engagement','Eng. Owner'].map(h => (
-                                  <th key={h} style={{ padding:'6px 10px', textAlign:'left',
-                                    color:'var(--text-tertiary)', fontWeight:500,
-                                    borderBottom:'1px solid var(--border)' }}>{h}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(previewData.preview || []).map((row, i) => (
-                                <tr key={row.contactId}
-                                  style={{ background: row.skippedDnc ? 'rgba(239,68,68,.05)'
-                                    : row.wouldChange ? 'rgba(59,130,246,.05)' : 'transparent',
-                                    borderBottom:'1px solid var(--border)' }}>
-                                  <td style={{ padding:'5px 10px', color:'var(--text)' }}>{row.name}</td>
-                                  <td style={{ padding:'5px 10px', color:'var(--text-secondary)' }}>{row.company}</td>
-                                  <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>{row.assignedBdr || '—'}</td>
-                                  <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>{row.contactOwner || '—'}</td>
-                                  <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>{row.currentRep || '—'}</td>
-                                  <td style={{ padding:'5px 10px',
-                                    color: row.wouldChange ? 'var(--accent)' : 'var(--text-tertiary)',
-                                    fontWeight: row.wouldChange ? 600 : 400 }}>
-                                    {row.proposedRep || '—'}
-                                    {row.wouldChange && <span style={{ marginLeft:4, fontSize:9, opacity:.6 }}>↑ change</span>}
-                                  </td>
-                                  <td style={{ padding:'5px 10px', fontSize:10,
-                                    color: row.repSource==='engagement' ? 'var(--accent)' : row.repSource==='contact_owner' ? '#D97706' : 'var(--text-tertiary)' }}>
-                                    {row.repSource === 'engagement' ? '⚡ engagement'
-                                      : row.repSource === 'assigned_bdr' ? '👤 BDR assigned'
-                                      : row.repSource === 'contact_owner' ? '🏠 owner'
-                                      : '—'}
-                                  </td>
-                                  <td style={{ padding:'5px 10px', color:'var(--text-tertiary)' }}>
-                                    {row.lastEngagementTs || (row.skippedDnc ? 'DNC/skip' : 'none')}
-                                  </td>
-                                  <td style={{ padding:'5px 10px',
-                                    color: row.lastEngagementExcluded ? 'var(--text-tertiary)' : 'var(--text-secondary)' }}>
-                                    {row.lastEngagementOwner
-                                      ? `${row.lastEngagementOwner}${row.lastEngagementExcluded ? ' (excl.)' : ''}`
-                                      : '—'}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
-                    {previewData?.error && (
-                      <div style={{ marginTop:8, fontSize:11, color:'var(--red)' }}>
-                        Preview error: {previewData.error}
-                      </div>
-                    )}
-                    </div>
-                )}
-              </div>
-            )}
 
             {/* ── Bot Opens Log ── */}
             {currentUserName === 'Chris Knapp' && (
@@ -4243,7 +3911,6 @@ function ReportsTab({ safeFetch, owners, currentUserName,
 
   const SECTIONS = [
     { key:'email_activity',  label:'Email Activity' },
-    { key:'marketing',       label:'Marketing' },
     { key:'sequences',       label:'Sequences' },
     { key:'deals',           label:'Deals' },
     { key:'team_activity',   label:'Team Activity' },
