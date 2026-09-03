@@ -5613,6 +5613,19 @@ function MeetingsTrackerTab({ safeFetch, BDR_OPTIONS }) {
           ))}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {[
+            { l: 'Last 30 days', days: [-30, 0] },
+            { l: 'Last 90 days', days: [-90, 0] },
+            { l: 'Last 6 months', days: [-180, 0] },
+            { l: 'This + next 30', days: [0, 30] },
+          ].map(({ l, days }) => (
+            <button key={l} onClick={() => {
+              setStartDate(new Date(Date.now() + days[0] * 24 * 60 * 60 * 1000).toISOString().slice(0, 10))
+              setEndDate(new Date(Date.now() + days[1] * 24 * 60 * 60 * 1000).toISOString().slice(0, 10))
+            }} style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '6px 12px', cursor: 'pointer' }}>
+              {l}
+            </button>
+          ))}
           <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
             style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '5px 10px' }} />
           <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>to</span>
@@ -5628,6 +5641,10 @@ function MeetingsTrackerTab({ safeFetch, BDR_OPTIONS }) {
             Export CSV
           </button>
         </div>
+      </div>
+
+      <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+        Showing meetings from <strong style={{ color: 'var(--text-secondary)' }}>{new Date(startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</strong> to <strong style={{ color: 'var(--text-secondary)' }}>{new Date(endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</strong> · {meetings.length} total
       </div>
 
       {/* KPIs */}
