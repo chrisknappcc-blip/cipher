@@ -6553,8 +6553,11 @@ export const handler = async (event, context) => {
     // not a guaranteed-exact link.
     if (method === "GET" && path === "/meetings-tracker") {
       try {
-        const windowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-        const windowEnd   = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        // Configurable date range — defaults to the same ±30 day window as
+        // before when not specified, but a caller can pass startDate/endDate
+        // to look at any historical range ("go back" ability).
+        const windowStart = qp.startDate ? new Date(qp.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const windowEnd   = qp.endDate   ? new Date(qp.endDate)   : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
         const repFilter = qp.repFilter || null; // optional: filter to one rep's meetings
 
         // ── HubSpot meetings ──────────────────────────────────────────────
@@ -6699,30 +6702,55 @@ export const handler = async (event, context) => {
         // meeting in this window, then one search for gong.io notes across
         // all of them, then match in memory. Avoids an N+1 pattern that
         // already caused real performance problems elsewhere in this file.
+        //
+        // IMPORTANT: the previous version silently caught any search error
+        // as "zero results" — meaning a real 400/permissions error would
+        // look identical to "no matches found," which is exactly the
+        // symptom reported (zero links across every meeting, not just some
+        // missing). Errors are now surfaced in _debug instead of masked.
         const meetingContactIdsForGong = [...new Set(
           merged.flatMap(m => (m.attendees || []).map(a => a.id)).filter(Boolean)
         )];
         let gongNotesByContact = {};
+        const gongDebug = {
+          attendeeContactCount: meetingContactIdsForGong.length,
+          notesSearchError: null,
+          notesFound: 0,
+          notesWithExtractedUrl: 0,
+          associationLookupError: null,
+        };
         if (meetingContactIdsForGong.length > 0) {
           for (let i = 0; i < meetingContactIdsForGong.length; i += 100) {
             const chunk = meetingContactIdsForGong.slice(i, i + 100);
-            const notesData = await hsPost(user.userId, "/crm/v3/objects/notes/search", {
-              filterGroups: [{
-                filters: [{ operator: "CONTAINS_TOKEN", propertyName: "hs_note_body", value: "gong.io" }],
-              }],
-              properties: ["hs_note_body", "hs_body_preview", "hs_timestamp"],
-              limit: 100,
-              associations: [], // Search API ignores this anyway (confirmed elsewhere) — associations pulled separately below
-            }).catch(() => ({ results: [] }));
+            let notesData;
+            try {
+              notesData = await hsPost(user.userId, "/crm/v3/objects/notes/search", {
+                filterGroups: [{
+                  filters: [{ operator: "CONTAINS_TOKEN", propertyName: "hs_note_body", value: "gong.io" }],
+                }],
+                properties: ["hs_note_body", "hs_body_preview", "hs_timestamp"],
+                limit: 100,
+              });
+            } catch (err) {
+              gongDebug.notesSearchError = err.message;
+              continue;
+            }
+            gongDebug.notesFound += (notesData.results || []).length;
             const noteIds = (notesData.results || []).map(n => n.id);
-            const noteContactAssoc = await batchFetchAssociations(user.userId, "notes", "contacts", noteIds);
+            let noteContactAssoc = {};
+            try {
+              noteContactAssoc = await batchFetchAssociations(user.userId, "notes", "contacts", noteIds);
+            } catch (err) {
+              gongDebug.associationLookupError = err.message;
+            }
             (notesData.results || []).forEach(n => {
               const linkedContacts = noteContactAssoc[n.id] || [];
               const relevantContacts = linkedContacts.filter(cid => chunk.includes(cid));
               if (relevantContacts.length === 0) return;
-              const urlMatch = (n.properties?.hs_body_preview || "").match(/https:\/\/[^\s]*gong\.io[^\s]*/);
+              const urlMatch = (n.properties?.hs_body_preview || n.properties?.hs_note_body || "").match(/https:\/\/[^\s"<]*gong\.io[^\s"<]*/);
               const gongUrl = urlMatch ? urlMatch[0] : null;
               if (!gongUrl) return;
+              gongDebug.notesWithExtractedUrl++;
               relevantContacts.forEach(cid => {
                 if (!gongNotesByContact[cid]) gongNotesByContact[cid] = [];
                 gongNotesByContact[cid].push({
@@ -6736,8 +6764,18 @@ export const handler = async (event, context) => {
         }
 
         // Attach best-matching Gong note to each meeting: same contact,
-        // note timestamp within 6 hours of the meeting's start time.
-        const GONG_MATCH_WINDOW_MS = 6 * 60 * 60 * 1000;
+        // note created on the SAME CALENDAR DAY as the meeting (in UTC).
+        // Widened from a strict hour-based window — Gong's transcription/
+        // summary generation can take hours after a call ends, so a note
+        // logged well after the meeting's start time is normal, not a
+        // sign of a bad match. Same-day is more robust to that delay while
+        // still being tight enough that it won't cross into a different
+        // meeting with the same contact.
+        const sameCalendarDay = (aMs, bMs) => {
+          if (aMs == null || bMs == null) return false;
+          const a = new Date(aMs), b = new Date(bMs);
+          return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
+        };
         merged.forEach(m => {
           const startMs = toMs(m.startTime);
           if (!startMs) return;
@@ -6747,7 +6785,7 @@ export const handler = async (event, context) => {
               const noteMs = toMs(note.timestamp);
               if (noteMs == null) return;
               const delta = Math.abs(noteMs - startMs);
-              if (delta <= GONG_MATCH_WINDOW_MS && delta < bestDelta) { best = note; bestDelta = delta; }
+              if (sameCalendarDay(noteMs, startMs) && delta < bestDelta) { best = note; bestDelta = delta; }
             });
           });
           if (best) { m.gongUrl = best.gongUrl; m.gongRecap = best.recap; }
@@ -6772,6 +6810,7 @@ export const handler = async (event, context) => {
             overdue:   result.filter(m => m.status === "overdue").length,
             withGongRecap: result.filter(m => m.gongUrl).length,
           },
+          _gongDebug: gongDebug,
         });
       } catch (err) {
         console.error("[meetings-tracker] Error:", err.message);
