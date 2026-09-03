@@ -456,14 +456,13 @@ export default function PipelineReviewView({ getToken }) {
 
   return (
     <div ref={containerRef} style={{
-      display: 'grid', gridTemplateColumns: '1fr 460px', gap: 16,
+      display: 'flex', flexDirection: 'column', gap: 16,
       background: 'var(--bg)', color: 'var(--text)', minHeight: '100%', padding: 4,
       zoom: presentationMode ? 1.3 : 1,
     }}>
 
-      <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
-
-        <div style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-panel)', paddingBottom: 10, marginBottom: 4 }}>
+      {/* ── Dedicated header: pipeline selector, team/search, sort, filters ── */}
+      <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)', position: 'sticky', top: 0, zIndex: 10 }}>
 
         <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {Object.entries(config).filter(([id]) => !hiddenPipelines.has(id)).map(([id, p]) => {
@@ -632,23 +631,28 @@ export default function PipelineReviewView({ getToken }) {
           </div>
         )}
 
-        </div>
+        {sections.length > 1 && (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button onClick={collapseAllStages} style={{ fontSize: 11.5, color: 'var(--accent-text)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+              Hide all
+            </button>
+            <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>·</span>
+            <button onClick={expandAllStages} style={{ fontSize: 11.5, color: 'var(--accent-text)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+              Show all
+            </button>
+          </div>
+        )}
+
+      </div>
+      {/* ── End dedicated header — deals and context panel open below it ── */}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 460px', gap: 16 }}>
+      <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
         {loading ? (
           <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>Loading deals…</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {sections.length > 1 && (
-              <div style={{ display: 'flex', gap: 10, marginBottom: -4 }}>
-                <button onClick={collapseAllStages} style={{ fontSize: 11.5, color: 'var(--accent-text)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-                  Hide all
-                </button>
-                <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>·</span>
-                <button onClick={expandAllStages} style={{ fontSize: 11.5, color: 'var(--accent-text)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-                  Show all
-                </button>
-              </div>
-            )}
             {sections.map(section => {
               const isCollapsed = collapsedStages.has(section.key)
               const sectionTotal = section.deals.reduce((sum, d) => sum + (Number(d.amount) || 0), 0)
@@ -709,6 +713,28 @@ export default function PipelineReviewView({ getToken }) {
                               ) : (deal.companyName || 'No company')}
                               {' · '}{deal.ownerName || 'Unassigned'}
                               {companyModeActive && deal.stageLabel && ` · ${deal.stageLabel}`}
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                            <div>
+                              <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.3px' }}>Size</div>
+                              <div style={{ fontSize: 14, fontWeight: 600 }}>{formatAmount(deal.amount) || '—'}</div>
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.3px' }}>Close</div>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: closeDateColor(deal.closeDate) }}>
+                                {formatDate(deal.closeDate) || '—'}
+                              </div>
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.3px' }}>Last contact</div>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: lastContactColor(deal.lastContact) }}>
+                                {daysAgo(deal.lastContact) != null ? `${daysAgo(deal.lastContact)}d ago` : 'No activity logged'}
+                              </div>
+                              {deal.lastContactSource && deal.lastContactSource !== 'deal' && (
+                                <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginTop: 1 }}>via {deal.lastContactSource}, not tagged to deal</div>
+                              )}
                             </div>
                           </div>
 
@@ -825,6 +851,7 @@ export default function PipelineReviewView({ getToken }) {
         ) : (
           <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>Select a deal to see its recap and next steps.</div>
         )}
+      </div>
       </div>
     </div>
   )
