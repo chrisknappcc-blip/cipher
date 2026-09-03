@@ -129,13 +129,29 @@ export const handler = async (event, context) => {
       // clear on their own.
       const metadataBody = { app_metadata: { must_change_password: true } };
 
+      // GoTrue (the identity system underlying Netlify Identity) appears to
+      // only honor email_confirm as a CREATE-time flag — confirmed via a
+      // real case where updating an existing stuck-pending user set the
+      // new password successfully but the account still showed "Email Not
+      // Confirmed" afterward. Setting confirmed_at/email_confirmed_at
+      // directly is the reliable way to mark an EXISTING user confirmed;
+      // email_confirm is left in too since it's harmless if ignored and
+      // still needed for the create path below.
+      const nowIso = new Date().toISOString();
+
       let res, data, action;
       if (existingUser) {
         action = "updated";
         res = await fetch(`${identityBase}/users/${existingUser.id}`, {
           method: "PUT",
           headers: identityHeaders,
-          body: JSON.stringify({ password, email_confirm: true, ...metadataBody }),
+          body: JSON.stringify({
+            password,
+            email_confirm: true,
+            confirmed_at: nowIso,
+            email_confirmed_at: nowIso,
+            ...metadataBody,
+          }),
         });
       } else {
         action = "created";
@@ -154,6 +170,13 @@ export const handler = async (event, context) => {
         };
       }
 
+      // Verify the confirmation actually took, rather than assume it from
+      // a 200 status — that assumption is exactly what went wrong last
+      // time. GoTrue's response to the update/create call includes the
+      // resulting user record directly, so this checks it without a
+      // separate follow-up request.
+      const actuallyConfirmed = !!(data.confirmed_at || data.email_confirmed_at);
+
       return {
         statusCode: 200,
         body: JSON.stringify({
@@ -161,7 +184,10 @@ export const handler = async (event, context) => {
           password, // returned once, here, so you can relay it — never stored or logged anywhere
           userId: data.id,
           action, // "created" (brand new) or "updated" (fixed a stuck pending invite)
-          message: action === "updated"
+          confirmed: actuallyConfirmed,
+          message: !actuallyConfirmed
+            ? "Account created/updated, but the confirmation status could not be verified from the response — check manually before assuming this worked."
+            : action === "updated"
             ? "Found an existing pending invite for this email and confirmed it directly with a new password — no email link needed. They'll be required to change this password on first login."
             : "User created and fully confirmed — no email link needed. They'll be required to change this password on first login.",
         }),
