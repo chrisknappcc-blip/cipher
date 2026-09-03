@@ -504,7 +504,14 @@ export default function PipelineReviewView({ getToken }) {
                     togglePipelineHidden(id)
                     if (selectedPipelines.has(id) && selectedPipelines.size === 1) {
                       const nextVisible = Object.keys(config).find(pid => pid !== id && !hiddenPipelines.has(pid))
-                      if (nextVisible) setSelectedPipelines(new Set([nextVisible]))
+                      // If there's nothing else visible to fall back to,
+                      // clear the selection outright — leaving it pointing
+                      // at the pipeline that was just hidden meant the app
+                      // still showed that pipeline's stages even though no
+                      // pill was visible anywhere to indicate it was still
+                      // "selected." Nothing visible should mean nothing
+                      // selected, not a selection nobody can see.
+                      setSelectedPipelines(new Set(nextVisible ? [nextVisible] : []))
                     }
                   }}
                   title={`Hide ${p.label}`}
