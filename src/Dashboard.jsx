@@ -5531,11 +5531,23 @@ function MeetingsTrackerTab({ safeFetch, BDR_OPTIONS }) {
   const [repFilter, setRepFilter] = useState('')
   const [expanded, setExpanded] = useState(null) // meeting id with recap expanded
 
+  // Date range — defaults match the backend's own default (30 back, 30
+  // ahead) so the initial load and an explicit "reset to default" land on
+  // the same range. Stored as plain YYYY-MM-DD strings for the date inputs.
+  const todayStr = () => new Date().toISOString().slice(0, 10)
+  const defaultStart = () => new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const defaultEnd   = () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const [startDate, setStartDate] = useState(defaultStart)
+  const [endDate, setEndDate]     = useState(defaultEnd)
+
   const fetchMeetings = useCallback(async () => {
     setLoading(true); setError(null)
     try {
-      const qs = repFilter ? `?repFilter=${encodeURIComponent(repFilter)}` : ''
-      const data = await safeFetch(`/api/hubspot/meetings-tracker${qs}`)
+      const params = new URLSearchParams()
+      if (repFilter) params.set('repFilter', repFilter)
+      if (startDate) params.set('startDate', new Date(startDate).toISOString())
+      if (endDate) params.set('endDate', new Date(endDate + 'T23:59:59').toISOString())
+      const data = await safeFetch(`/api/hubspot/meetings-tracker?${params.toString()}`)
       setMeetings(data.meetings || [])
       setCounts(data.counts || { scheduled: 0, completed: 0, overdue: 0, withGongRecap: 0 })
     } catch (e) {
@@ -5543,11 +5555,33 @@ function MeetingsTrackerTab({ safeFetch, BDR_OPTIONS }) {
     } finally {
       setLoading(false)
     }
-  }, [safeFetch, repFilter])
+  }, [safeFetch, repFilter, startDate, endDate])
 
   useEffect(() => { fetchMeetings() }, [fetchMeetings])
 
   const filtered = statusFilter === 'all' ? meetings : meetings.filter(m => m.status === statusFilter)
+
+  const exportMeetingsCSV = () => {
+    const rows = [
+      ['Subject', 'Status', 'Source', 'Start Time', 'End Time', 'Organizer', 'Attendees', 'Gong Link', 'Recap'],
+      ...filtered.map(m => [
+        m.subject || '',
+        m.status || '',
+        m.source || '',
+        m.startTime ? new Date(m.startTime).toLocaleString() : '',
+        m.endTime ? new Date(m.endTime).toLocaleString() : '',
+        m.organizerName || '',
+        (m.attendees || []).map(a => a.name).filter(Boolean).join('; '),
+        m.gongUrl || '',
+        (m.gongRecap || m.internalNotes || '').replace(/\s+/g, ' ').trim(),
+      ])
+    ]
+    const csv = rows.map(r => r.map(v => `"${String(v || '').replace(/"/g, '""')}"`).join(',')).join('\n')
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    link.download = `meetings-${startDate}-to-${endDate}.csv`
+    link.click()
+  }
 
   const statusStyle = {
     scheduled: { bg: 'rgba(59,130,246,.1)', color: 'var(--accent)', label: 'Scheduled' },
@@ -5578,11 +5612,20 @@ function MeetingsTrackerTab({ safeFetch, BDR_OPTIONS }) {
             </button>
           ))}
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+            style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '5px 10px' }} />
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>to</span>
+          <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+            style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '5px 10px' }} />
           <Select value={repFilter} onChange={setRepFilter} options={BDR_OPTIONS} />
           <button onClick={fetchMeetings}
             style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '6px 14px', cursor: 'pointer' }}>
             Refresh
+          </button>
+          <button onClick={exportMeetingsCSV} disabled={filtered.length === 0}
+            style={{ fontSize: 12, color: filtered.length === 0 ? 'var(--text-tertiary)' : '#fff', background: filtered.length === 0 ? 'var(--bg-secondary)' : 'var(--accent)', border: 'none', borderRadius: 'var(--radius)', padding: '6px 14px', cursor: filtered.length === 0 ? 'not-allowed' : 'pointer', fontWeight: 500 }}>
+            Export CSV
           </button>
         </div>
       </div>
