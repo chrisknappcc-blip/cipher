@@ -450,7 +450,7 @@ export default function PipelineReviewView({ getToken }) {
     }}>
 
       {/* ── Dedicated header: pipeline selector, team/search, sort, filters ── */}
-      <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)', position: 'sticky', top: 0, zIndex: 10 }}>
+      <div style={{ padding: '14px 22px', background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)', position: 'sticky', top: 0, zIndex: 10 }}>
 
         <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {Object.entries(config).filter(([id]) => !hiddenPipelines.has(id)).map(([id, p]) => {
@@ -503,7 +503,7 @@ export default function PipelineReviewView({ getToken }) {
           )}
         </div>
 
-        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value)} disabled={companyModeActive}
             style={{ background: 'var(--bg-secondary)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 12.5, padding: '8px 10px', opacity: companyModeActive ? 0.4 : 1 }}>
             <option value="">Whole team</option>
