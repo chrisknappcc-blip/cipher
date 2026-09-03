@@ -519,7 +519,7 @@ export default function PipelineReviewView({ getToken }) {
             <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
               {hiddenPipelines.size} hidden ·{' '}
               {[...hiddenPipelines].map(id => (
-                <button key={id} onClick={() => togglePipelineHidden(id)}
+                <button key={id} onClick={() => { togglePipelineHidden(id); setSelectedPipelines(prev => new Set([...prev, id])) }}
                   style={{ background: 'none', border: 'none', color: 'var(--accent-text)', cursor: 'pointer', fontSize: 11.5, textDecoration: 'underline', padding: '0 2px' }}>
                   Show {config[id]?.label}
                 </button>
