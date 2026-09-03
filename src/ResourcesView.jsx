@@ -31,13 +31,30 @@ const SECTIONS = [
   { key: 'intranet', label: 'Valuable Links' },
 ]
 
-export default function ResourcesView({ getToken }) {
+export default function ResourcesView({ getToken, currentUserName }) {
   const [activeSection, setActiveSection] = useState(SECTIONS[0].key)
   const [content, setContent] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [query, setQuery] = useState('')
   const [collapsedPaths, setCollapsedPaths] = useState(new Set())
+  const isAdmin = currentUserName === 'Chris Knapp'
+  const [addOpen, setAddOpen] = useState(false)
+  const [newLabel, setNewLabel] = useState('')
+  const [newUrl, setNewUrl] = useState('')
+  const [newDescription, setNewDescription] = useState('')
+  const [newFolder, setNewFolder] = useState('')
+  const [addSaving, setAddSaving] = useState(false)
+  const [addError, setAddError] = useState(null)
+
+  const fetchContent = () => {
+    setLoading(true)
+    setError(null)
+    return apiFetch(`/.netlify/functions/get-resources?section=${activeSection}`, getToken)
+      .then(data => setContent(data))
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -76,6 +93,34 @@ export default function ResourcesView({ getToken }) {
 
   const hasContent = content?.blocks?.length > 0
 
+  const submitAddLink = async () => {
+    if (!newLabel.trim() || !newUrl.trim()) { setAddError('Label and URL are required.'); return }
+    setAddSaving(true); setAddError(null)
+    try {
+      const jwt = await window.netlifyIdentity.currentUser().jwt()
+      const res = await fetch('/.netlify/functions/add-resource-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+        body: JSON.stringify({
+          section: activeSection,
+          label: newLabel.trim(),
+          url: newUrl.trim(),
+          description: newDescription.trim(),
+          folder: newFolder.trim(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+      setNewLabel(''); setNewUrl(''); setNewDescription(''); setNewFolder('')
+      setAddOpen(false)
+      await fetchContent()
+    } catch (e) {
+      setAddError(e.message)
+    } finally {
+      setAddSaving(false)
+    }
+  }
+
   return (
     <div style={{ padding: '22px 26px', background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)', maxWidth: 860 }}>
       <div style={{ display: 'flex', gap: 6, marginBottom: 22, borderBottom: '1px solid var(--border)', paddingBottom: 14 }}>
@@ -91,6 +136,32 @@ export default function ResourcesView({ getToken }) {
           </button>
         ))}
       </div>
+
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <button onClick={() => setAddOpen(o => !o)}
+            style={{ fontSize: 12, color: 'var(--nav-resources)', background: 'none', border: '1px solid var(--nav-resources)', borderRadius: 'var(--radius)', padding: '6px 14px', cursor: 'pointer', fontWeight: 500 }}>
+            {addOpen ? 'Cancel' : '+ Add Link'}
+          </button>
+          {addOpen && (
+            <div style={{ marginTop: 10, padding: '14px 16px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Link label"
+                style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 'var(--radius)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13 }} />
+              <input value={newUrl} onChange={e => setNewUrl(e.target.value)} placeholder="https://..."
+                style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 'var(--radius)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13 }} />
+              <input value={newDescription} onChange={e => setNewDescription(e.target.value)} placeholder="Description (optional)"
+                style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 'var(--radius)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13 }} />
+              <input value={newFolder} onChange={e => setNewFolder(e.target.value)} placeholder="Folder (optional, e.g. Discovery Calls)"
+                style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 'var(--radius)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13 }} />
+              {addError && <div style={{ fontSize: 12, color: 'var(--red)' }}>{addError}</div>}
+              <button onClick={submitAddLink} disabled={addSaving}
+                style={{ alignSelf: 'flex-start', padding: '7px 16px', background: addSaving ? 'var(--bg)' : 'var(--nav-resources)', color: addSaving ? 'var(--text-tertiary)' : '#fff', border: 'none', borderRadius: 'var(--radius)', fontSize: 13, fontWeight: 500, cursor: addSaving ? 'not-allowed' : 'pointer' }}>
+                {addSaving ? 'Saving…' : 'Save Link'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div style={{ background: 'var(--red-light)', color: 'var(--red)', padding: '10px 14px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 16 }}>

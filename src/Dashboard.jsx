@@ -2383,7 +2383,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
         )}
 
         {activeTab === 'resources' && (
-          <ResourcesView getToken={getToken} />
+          <ResourcesView getToken={getToken} currentUserName={currentUserName} />
         )}
 
         {activeTab === 'dashboard' && (
