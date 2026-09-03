@@ -6718,6 +6718,15 @@ export const handler = async (event, context) => {
           notesFound: 0,
           notesWithExtractedUrl: 0,
           associationLookupError: null,
+          // Raw look at exactly what the first note's properties actually
+          // contain — added specifically because notesFound was correct
+          // (33, matching HubSpot's real count) but notesWithExtractedUrl
+          // was 0, which HubSpot's own API does NOT reproduce when queried
+          // directly with the identical request shape. This will show
+          // definitively whether hs_body_preview/hs_note_body are actually
+          // coming through Cipher's own hsPost call, or something is
+          // stripping/truncating them before this code ever sees them.
+          firstNoteSample: null,
         };
         if (meetingContactIdsForGong.length > 0) {
           for (let i = 0; i < meetingContactIdsForGong.length; i += 100) {
@@ -6736,6 +6745,23 @@ export const handler = async (event, context) => {
               continue;
             }
             gongDebug.notesFound += (notesData.results || []).length;
+            if (!gongDebug.firstNoteSample && (notesData.results || []).length > 0) {
+              const first = notesData.results[0];
+              const previewText = first.properties?.hs_body_preview || "";
+              const bodyText = first.properties?.hs_note_body || "";
+              const regex = /https:\/\/[^\s"<]*gong\.io[^\s"<]*/;
+              gongDebug.firstNoteSample = {
+                id: first.id,
+                propertyKeys: Object.keys(first.properties || {}),
+                hasBodyPreview: !!previewText,
+                bodyPreviewLength: previewText.length,
+                bodyPreviewFirst200: previewText.slice(0, 200),
+                hasNoteBody: !!bodyText,
+                noteBodyLength: bodyText.length,
+                regexMatchOnPreview: (previewText.match(regex) || [null])[0],
+                regexMatchOnBody: (bodyText.match(regex) || [null])[0],
+              };
+            }
             const noteIds = (notesData.results || []).map(n => n.id);
             let noteContactAssoc = {};
             try {
@@ -6747,7 +6773,13 @@ export const handler = async (event, context) => {
               const linkedContacts = noteContactAssoc[n.id] || [];
               const relevantContacts = linkedContacts.filter(cid => chunk.includes(cid));
               if (relevantContacts.length === 0) return;
-              const urlMatch = (n.properties?.hs_body_preview || n.properties?.hs_note_body || "").match(/https:\/\/[^\s"<]*gong\.io[^\s"<]*/);
+              // hs_note_body first, not hs_body_preview — some notes wrap
+              // the link in an <a href="URL">different display text</a>,
+              // where the preview (which strips HTML) shows the display
+              // text but not the URL. hs_note_body's raw HTML reliably has
+              // the actual href regardless of how the note was formatted.
+              const regex = /https:\/\/[^\s"<]*gong\.io[^\s"<]*/;
+              const urlMatch = (n.properties?.hs_note_body || "").match(regex) || (n.properties?.hs_body_preview || "").match(regex);
               const gongUrl = urlMatch ? urlMatch[0] : null;
               if (!gongUrl) return;
               gongDebug.notesWithExtractedUrl++;
