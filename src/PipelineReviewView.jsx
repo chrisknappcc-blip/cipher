@@ -200,7 +200,7 @@ export default function PipelineReviewView({ getToken }) {
       }
       return
     }
-    if (selectedPipelines.size === 0) return
+    if (selectedPipelines.size === 0) { setDeals([]); return }
     setLoading(true)
     setError(null)
     try {
@@ -294,6 +294,10 @@ export default function PipelineReviewView({ getToken }) {
   const showPipelinePrefix = companyModeActive || selectedPipelines.size > 1
   const sections = useMemo(() => {
     if (!config) return []
+    // Unconditional — whatever path led to zero pipelines selected,
+    // nothing renders. This doesn't need to know HOW selection became
+    // empty; it just guarantees the outcome is always correct.
+    if (selectedPipelines.size === 0) return []
 
     const byPipeline = {}
     for (const deal of sortedDeals) {
