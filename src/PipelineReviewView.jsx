@@ -634,7 +634,7 @@ export default function PipelineReviewView({ getToken }) {
       </div>
       {/* ── End dedicated header — deals and context panel open below it ── */}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 460px', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: 16 }}>
       <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
         {loading ? (
