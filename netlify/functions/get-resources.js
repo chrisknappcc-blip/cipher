@@ -84,11 +84,39 @@ async function listBlobNames(prefix) {
 // executive" becomes "Client Executive Team", an email stays as-is
 // (still identifiable, just not reformatted), "shared"/"bdr"/"ae" stay
 // as their plain label.
+// Known team emails mapped to display names — same small, known-team
+// approach already used elsewhere in Cipher (e.g. GOLD_OWNER_MAP) rather
+// than adding a live HubSpot owners lookup to what's otherwise a pure
+// Azure Blob function. Anyone not on this list still gets a reasonable
+// fallback (see bucketLabel below), not a raw email address.
+const KNOWN_TEAM_EMAILS = {
+  "cknapp@carecontinuity.com": "Chris Knapp",
+  "cpate@carecontinuity.com": "Chiara Pate",
+  "mvalin@carecontinuity.com": "Matt Valin",
+  "jhaine@carecontinuity.com": "Joseph Haine",
+  "tgrisham@carecontinuity.com": "Tim Grisham",
+  "chooper@carecontinuity.com": "Cole Hooper",
+  "jhansel@carecontinuity.com": "John Hansel",
+};
+
 function bucketLabel(bucket) {
   if (bucket.startsWith("team:")) {
     const slug = bucket.slice(5).replace(/-/g, " ");
     return slug.replace(/\b\w/g, c => c.toUpperCase()) + " Team";
   }
+  if (bucket.includes("@")) {
+    if (KNOWN_TEAM_EMAILS[bucket.toLowerCase()]) return KNOWN_TEAM_EMAILS[bucket.toLowerCase()];
+    // Unknown email fallback — strip the domain and clean up the
+    // username rather than show the raw address. Not as accurate as a
+    // real name, but meaningfully less confusing than a full email.
+    const username = bucket.split("@")[0];
+    return username
+      .replace(/[._]/g, " ")
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+  if (bucket === "bdr") return "BDR Track";
+  if (bucket === "ae") return "AE Track";
+  if (bucket === "shared") return "Company-Wide";
   return bucket;
 }
 
