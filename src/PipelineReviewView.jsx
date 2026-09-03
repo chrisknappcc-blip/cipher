@@ -270,18 +270,6 @@ export default function PipelineReviewView({ getToken }) {
   const sections = useMemo(() => {
     if (!config) return []
 
-    // Sorting by date/amount/name is meant to work across the WHOLE list,
-    // not just within each stage — grouping by stage was undermining that
-    // even though the underlying sort was already global, since reading
-    // top to bottom kept getting interrupted by stage headers. One flat
-    // section when a real sort is active; stage grouping only applies to
-    // the natural/default view.
-    if (sortField && sortField !== 'name') {
-      const visibleDeals = sortedDeals.filter(d => !hiddenPipelines.has(d.pipelineId))
-      if (visibleDeals.length === 0) return []
-      return [{ key: 'sorted-all', label: `All deals · sorted by ${sortField === 'closeDate' ? 'close date' : sortField === 'amount' ? 'amount' : 'last contact'}`, deals: visibleDeals }]
-    }
-
     const byPipeline = {}
     for (const deal of sortedDeals) {
       const pid = deal.pipelineId
@@ -304,7 +292,7 @@ export default function PipelineReviewView({ getToken }) {
       })
     })
     return result
-  }, [sortedDeals, config, hiddenPipelines, showPipelinePrefix, sortField])
+  }, [sortedDeals, config, hiddenPipelines, showPipelinePrefix])
 
   const selectedDeal = deals.find(d => d.id === selectedDealId) || null
   const [lastMeeting, setLastMeeting] = useState(null)
