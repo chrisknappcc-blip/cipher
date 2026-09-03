@@ -129,14 +129,17 @@ export const handler = async (event, context) => {
       // clear on their own.
       const metadataBody = { app_metadata: { must_change_password: true } };
 
-      // GoTrue (the identity system underlying Netlify Identity) appears to
-      // only honor email_confirm as a CREATE-time flag — confirmed via a
-      // real case where updating an existing stuck-pending user set the
-      // new password successfully but the account still showed "Email Not
-      // Confirmed" afterward. Setting confirmed_at/email_confirmed_at
-      // directly is the reliable way to mark an EXISTING user confirmed;
-      // email_confirm is left in too since it's harmless if ignored and
-      // still needed for the create path below.
+      // Netlify Identity is built on Netlify's own fork of GoTrue, and its
+      // actual source (netlify/gotrue/api/admin.go — adminUserParams
+      // struct) defines this field as `confirm`, not `email_confirm`.
+      // `email_confirm` is Supabase's separate GoTrue fork's naming
+      // convention — an easy mix-up, but a real one: every previous
+      // attempt was silently sending a field name Netlify's API never
+      // recognized at all, which is why accounts kept showing "Email Not
+      // Confirmed" regardless of what else was tried. confirmed_at /
+      // email_confirmed_at are kept as extra safety nets in case this
+      // portal's exact GoTrue version differs, since sending extra fields
+      // is harmless if ignored.
       const nowIso = new Date().toISOString();
 
       let res, data, action;
@@ -147,7 +150,7 @@ export const handler = async (event, context) => {
           headers: identityHeaders,
           body: JSON.stringify({
             password,
-            email_confirm: true,
+            confirm: true,
             confirmed_at: nowIso,
             email_confirmed_at: nowIso,
             ...metadataBody,
@@ -158,7 +161,7 @@ export const handler = async (event, context) => {
         res = await fetch(`${identityBase}/users`, {
           method: "POST",
           headers: identityHeaders,
-          body: JSON.stringify({ email, password, email_confirm: true, ...metadataBody }),
+          body: JSON.stringify({ email, password, confirm: true, ...metadataBody }),
         });
       }
       data = await res.json().catch(() => ({}));
