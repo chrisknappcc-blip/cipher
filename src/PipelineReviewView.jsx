@@ -135,6 +135,17 @@ export default function PipelineReviewView({ getToken }) {
       setFocusIds(new Set(focusRes.dealIds || []))
       const firstPipelineId = Object.keys(configRes.pipelines || {}).find(id => !hiddenPipelines.has(id)) || Object.keys(configRes.pipelines || {})[0]
       setSelectedPipelines(new Set(firstPipelineId ? [firstPipelineId] : []))
+      // Same guarantee as togglePipelineSelected — whatever gets selected
+      // here must also not be hidden, in case every pipeline happened to
+      // be hidden from a prior session's localStorage state.
+      if (firstPipelineId && hiddenPipelines.has(firstPipelineId)) {
+        setHiddenPipelines(prevHidden => {
+          const nextHidden = new Set(prevHidden)
+          nextHidden.delete(firstPipelineId)
+          localStorage.setItem('cipher-pipeline-review-hidden', JSON.stringify([...nextHidden]))
+          return nextHidden
+        })
+      }
     }).catch(e => setError(e.message))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -153,6 +164,20 @@ export default function PipelineReviewView({ getToken }) {
         next.delete(pipelineId)
       } else {
         next.add(pipelineId)
+        // Selecting a pipeline should always make it visible. Without
+        // this, a pipeline could end up selected (so loadDeals fetches
+        // its data) while ALSO still marked hidden from an earlier hide-
+        // button click (so the sections display filter excludes it
+        // entirely) — the exact combination that shows a real fetch count
+        // but zero visible deals.
+        if (hiddenPipelines.has(pipelineId)) {
+          setHiddenPipelines(prevHidden => {
+            const nextHidden = new Set(prevHidden)
+            nextHidden.delete(pipelineId)
+            localStorage.setItem('cipher-pipeline-review-hidden', JSON.stringify([...nextHidden]))
+            return nextHidden
+          })
+        }
       }
       return next
     })
@@ -277,7 +302,7 @@ export default function PipelineReviewView({ getToken }) {
       byPipeline[pid].push(deal)
     }
     const result = []
-    Object.keys(byPipeline).filter(pid => !hiddenPipelines.has(pid)).forEach(pid => {
+    Object.keys(byPipeline).filter(pid => !hiddenPipelines.has(pid) || selectedPipelines.has(pid)).forEach(pid => {
       const pLabel = config[pid]?.label || 'Unknown pipeline'
       const stageOrder = sortStagesByPriority(config[pid]?.stages || [])
       stageOrder.forEach(stage => {
@@ -292,7 +317,7 @@ export default function PipelineReviewView({ getToken }) {
       })
     })
     return result
-  }, [sortedDeals, config, hiddenPipelines, showPipelinePrefix])
+  }, [sortedDeals, config, hiddenPipelines, showPipelinePrefix, selectedPipelines])
 
   const selectedDeal = deals.find(d => d.id === selectedDealId) || null
   const [lastMeeting, setLastMeeting] = useState(null)
