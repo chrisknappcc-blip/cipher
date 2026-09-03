@@ -78,7 +78,7 @@ export default function PipelineReviewView({ getToken }) {
   const [recapLoading, setRecapLoading] = useState(false)
   const [collapsedStages, setCollapsedStages] = useState(new Set())
 
-  const [sortField, setSortField] = useState('closeDate')
+  const [sortField, setSortField] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [minAmount, setMinAmount] = useState('')
@@ -233,7 +233,8 @@ export default function PipelineReviewView({ getToken }) {
     const sorted = [...filteredDeals]
     sorted.sort((a, b) => {
       let av, bv
-      if (sortField === 'amount') { av = Number(a.amount) || 0; bv = Number(b.amount) || 0 }
+      if (!sortField) { av = a.closeDate ? new Date(a.closeDate).getTime() : Infinity; bv = b.closeDate ? new Date(b.closeDate).getTime() : Infinity }
+      else if (sortField === 'amount') { av = Number(a.amount) || 0; bv = Number(b.amount) || 0 }
       else if (sortField === 'closeDate') { av = a.closeDate ? new Date(a.closeDate).getTime() : Infinity; bv = b.closeDate ? new Date(b.closeDate).getTime() : Infinity }
       else if (sortField === 'lastContact') { av = a.lastContact ? new Date(a.lastContact).getTime() : 0; bv = b.lastContact ? new Date(b.lastContact).getTime() : 0 }
       else { av = (a.name || '').toLowerCase(); bv = (b.name || '').toLowerCase() }
@@ -250,9 +251,37 @@ export default function PipelineReviewView({ getToken }) {
   // pipeline name only prefixes the section heading when more than one
   // pipeline is actually being shown, so selecting just one still looks
   // exactly like before.
+  // Custom bucket order requested — named stages sort into this exact
+  // sequence; anything not in this list keeps its original HubSpot order,
+  // appended after the named ones.
+  const STAGE_PRIORITY = ['Procurement', 'Pricing', 'Value Prop', 'Engaged', 'Expansion', 'Revisit']
+  const sortStagesByPriority = (stages) => {
+    return [...stages].sort((a, b) => {
+      const ai = STAGE_PRIORITY.findIndex(p => (a.label || '').includes(p))
+      const bi = STAGE_PRIORITY.findIndex(p => (b.label || '').includes(p))
+      if (ai === -1 && bi === -1) return 0
+      if (ai === -1) return 1
+      if (bi === -1) return -1
+      return ai - bi
+    })
+  }
+
   const showPipelinePrefix = companyModeActive || selectedPipelines.size > 1
   const sections = useMemo(() => {
     if (!config) return []
+
+    // Sorting by date/amount/name is meant to work across the WHOLE list,
+    // not just within each stage — grouping by stage was undermining that
+    // even though the underlying sort was already global, since reading
+    // top to bottom kept getting interrupted by stage headers. One flat
+    // section when a real sort is active; stage grouping only applies to
+    // the natural/default view.
+    if (sortField && sortField !== 'name') {
+      const visibleDeals = sortedDeals.filter(d => !hiddenPipelines.has(d.pipelineId))
+      if (visibleDeals.length === 0) return []
+      return [{ key: 'sorted-all', label: `All deals · sorted by ${sortField === 'closeDate' ? 'close date' : sortField === 'amount' ? 'amount' : 'last contact'}`, deals: visibleDeals }]
+    }
+
     const byPipeline = {}
     for (const deal of sortedDeals) {
       const pid = deal.pipelineId
@@ -262,7 +291,7 @@ export default function PipelineReviewView({ getToken }) {
     const result = []
     Object.keys(byPipeline).filter(pid => !hiddenPipelines.has(pid)).forEach(pid => {
       const pLabel = config[pid]?.label || 'Unknown pipeline'
-      const stageOrder = config[pid]?.stages || []
+      const stageOrder = sortStagesByPriority(config[pid]?.stages || [])
       stageOrder.forEach(stage => {
         const stageDeals = byPipeline[pid].filter(d => d.stageId === stage.id)
         if (stageDeals.length > 0) {
@@ -275,7 +304,7 @@ export default function PipelineReviewView({ getToken }) {
       })
     })
     return result
-  }, [sortedDeals, config, hiddenPipelines, showPipelinePrefix])
+  }, [sortedDeals, config, hiddenPipelines, showPipelinePrefix, sortField])
 
   const selectedDeal = deals.find(d => d.id === selectedDealId) || null
   const [lastMeeting, setLastMeeting] = useState(null)
@@ -325,6 +354,18 @@ export default function PipelineReviewView({ getToken }) {
   }
   const collapseAllStages = () => setCollapsedStages(new Set(sections.map(s => s.key)))
   const expandAllStages = () => setCollapsedStages(new Set())
+
+  // Default to rolled up on initial load — only fires once, tracked via
+  // ref, so it doesn't re-collapse everything every time the section list
+  // recomputes from a filter change (which would undo a user's manual
+  // expand/collapse choices mid-session).
+  const hasSetInitialCollapse = useRef(false)
+  useEffect(() => {
+    if (hasSetInitialCollapse.current) return
+    if (sections.length === 0) return
+    setCollapsedStages(new Set(sections.map(s => s.key)))
+    hasSetInitialCollapse.current = true
+  }, [sections])
 
   const clearFilters = () => {
     setMinAmount(''); setMaxAmount(''); setCloseBefore(''); setCloseAfter(''); setStaleOnly(false)
@@ -415,12 +456,14 @@ export default function PipelineReviewView({ getToken }) {
 
   return (
     <div ref={containerRef} style={{
-      display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16,
+      display: 'grid', gridTemplateColumns: '1fr 460px', gap: 16,
       background: 'var(--bg)', color: 'var(--text)', minHeight: '100%', padding: 4,
       zoom: presentationMode ? 1.3 : 1,
     }}>
 
       <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
+
+        <div style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-panel)', paddingBottom: 10, marginBottom: 4 }}>
 
         <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {Object.entries(config).filter(([id]) => !hiddenPipelines.has(id)).map(([id, p]) => {
@@ -589,6 +632,8 @@ export default function PipelineReviewView({ getToken }) {
           </div>
         )}
 
+        </div>
+
         {loading ? (
           <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '20px 0' }}>Loading deals…</div>
         ) : (
@@ -606,13 +651,15 @@ export default function PipelineReviewView({ getToken }) {
             )}
             {sections.map(section => {
               const isCollapsed = collapsedStages.has(section.key)
+              const sectionTotal = section.deals.reduce((sum, d) => sum + (Number(d.amount) || 0), 0)
               return (
                 <div key={section.key}>
                   <div onClick={() => toggleStage(section.key)} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
                     <span style={{ fontSize: 13, fontWeight: 600 }}>{section.label}</span>
                     <span style={{ fontSize: 11, color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', borderRadius: 10, padding: '1px 8px' }}>
-                      {section.deals.filter(d => discussedIds.has(d.id)).length}/{section.deals.length}
+                      {section.deals.filter(d => discussedIds.has(d.id)).length}/{section.deals.length} discussed
                     </span>
+                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{formatAmount(sectionTotal)} total</span>
                     <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginLeft: 'auto' }}>{isCollapsed ? 'Show' : 'Hide'}</span>
                   </div>
                   {!isCollapsed && (
@@ -665,43 +712,6 @@ export default function PipelineReviewView({ getToken }) {
                             </div>
                           </div>
 
-                          {/* Prominent stat row — this is the "easier to call out" part */}
-                          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                            <div>
-                              <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.3px' }}>Deal size</div>
-                              <div style={{ fontSize: 14, fontWeight: 600 }}>{formatAmount(deal.amount) || '—'}</div>
-                            </div>
-                            <div>
-                              <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.3px' }}>Close date</div>
-                              <div style={{ fontSize: 14, fontWeight: 600, color: closeDateColor(deal.closeDate) }}>
-                                {formatDate(deal.closeDate) || '—'}
-                              </div>
-                            </div>
-                            <div>
-                              <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.3px' }}>Last contact</div>
-                              <div style={{ fontSize: 14, fontWeight: 600, color: lastContactColor(deal.lastContact) }}>
-                                {daysAgo(deal.lastContact) != null ? `${daysAgo(deal.lastContact)}d ago` : 'No activity logged'}
-                              </div>
-                              {deal.lastContactSource && deal.lastContactSource !== 'deal' && (
-                                <div style={{ fontSize: 9.5, color: 'var(--text-tertiary)', marginTop: 1 }}>via {deal.lastContactSource}, not tagged to deal</div>
-                              )}
-                            </div>
-                          </div>
-
-                          {(deal.currentStatus || deal.nextStep) && (
-                            <div style={{ marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                              {deal.currentStatus && (
-                                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                                  <strong style={{ color: 'var(--text)' }}>Status:</strong> {deal.currentStatus}
-                                </div>
-                              )}
-                              {deal.nextStep && (
-                                <div style={{ fontSize: 12, color: 'var(--accent-text)' }}>
-                                  <strong>Next:</strong> {deal.nextStep}
-                                </div>
-                              )}
-                            </div>
-                          )}
                         </div>
                         )
                       })}
