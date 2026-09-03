@@ -1,5 +1,5 @@
 // netlify/functions/get-resources.js
-// NEW FILE — path from repo root: netlify/functions/get-resources.js
+// REPLACE — path from repo root: netlify/functions/get-resources.js
 //
 // Read-only access to the SAME content library the Onboarding tool
 // authors into (Azure Blob container "onboarding-cc"). This is
@@ -9,18 +9,25 @@
 // standalone concerns in this repo (top5-scheduler.js,
 // primary-outreach-rep-webhook.js).
 //
-// Resolution order is copied EXACTLY from the Onboarding tool's own
-// get-content.js (team -> managerId -> track -> shared) — this is the
-// real, verified logic pulled directly from that codebase, not
-// reconstructed from a description. Read-only: this never writes back to
-// the blob, so there's no risk of the two apps racing on the same file.
+// DEFAULT BEHAVIOR CHANGED: this used to resolve to a single bucket
+// (team -> the viewer's own manager email -> track -> shared, stopping
+// at the first non-empty match — copied exactly from Onboarding's own
+// resolution order). Cipher's Resources tab now shows the UNION of every
+// team/manager's content by default instead — every bucket that's ever
+// had content authored for a given section, merged into one list. This
+// works by listing every blob under content/ via Azure's List Blobs API
+// (rather than needing to know every team/manager name in advance), then
+// fetching and merging whichever ones match the requested section.
 //
-// managerId is mapped to the logged-in Cipher user's own email. In
-// Onboarding, a manager's email is where most real content actually
-// lives (per that team's own documentation) — so a rep viewing Resources
-// in Cipher sees their own authored content first, falling through to
-// track-wide and shared defaults exactly the way a new hire would in
-// Onboarding.
+// Each merged block gets its source bucket prepended to its folder path
+// (e.g. "Chris Knapp / Q3 Calls" instead of just "Q3 Calls") specifically
+// so it's still clear whose content is whose once everything's combined
+// — without that, a flat merged list would make it impossible to tell
+// which team a given link or recording actually came from.
+//
+// The old single-bucket resolution is still available via ?scope=mine
+// for anyone who wants just their own team's content, in case "show
+// everything by default" turns out to be too noisy in practice.
 
 import { withAuth } from "./utils/auth.js";
 
@@ -31,19 +38,12 @@ import { withAuth } from "./utils/auth.js";
 // — a SAS token is cryptographically signed for one specific account, so
 // pointing it at the wrong account's URL always fails with a 403
 // regardless of how correct every other parameter is. That mismatch was
-// the actual root cause of every 403 hit while debugging this.
+// the actual root cause of every 403 hit while debugging this originally.
 const ACCOUNT = process.env.AZURE_ONBOARDING_ACCOUNT_NAME;
 // Dedicated, read-only, container-scoped SAS token for onboarding-cc —
 // deliberately separate from AZURE_STORAGE_SAS_TOKEN (Cipher's own token
-// for its own container). Azure returns a plain 404, not a permission
-// error, when a token tries to reach a container it isn't scoped for —
-// that's what was actually happening before this token existed: requests
-// looked like clean "not found" results at every resolution tier instead
-// of the real cause, a scope mismatch.
+// for its own container).
 const SAS = process.env.AZURE_ONBOARDING_SAS_TOKEN;
-// Separate container from Cipher's own data — same Azure account and SAS
-// token Cipher already uses elsewhere, just pointed at Onboarding's
-// container. Matches the default in Onboarding's own azureBlob.js.
 const CONTAINER = process.env.AZURE_ONBOARDING_CONTAINER || "onboarding-cc";
 
 const TITLES = {
@@ -63,13 +63,37 @@ async function readJson(blobName, fallback = null) {
   return res.json();
 }
 
+// Azure's List Blobs response is XML — this is a well-known, fixed
+// structure (<Name>content/foo/bar.json</Name> repeated per blob), so a
+// direct regex extraction is used here rather than pulling in a full XML
+// parsing dependency for one simple, predictable tag.
+async function listBlobNames(prefix) {
+  const url = `https://${ACCOUNT}.blob.core.windows.net/${CONTAINER}?restype=container&comp=list&prefix=${encodeURIComponent(prefix)}&${SAS}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Azure list failed for prefix ${prefix}: ${res.status}`);
+  const xml = await res.text();
+  const names = [];
+  const regex = /<Name>([^<]+)<\/Name>/g;
+  let match;
+  while ((match = regex.exec(xml)) !== null) names.push(match[1]);
+  return names;
+}
+
+// Turns a raw bucket identifier from the blob path into something
+// readable to prepend onto folder names once merged — "team:client-
+// executive" becomes "Client Executive Team", an email stays as-is
+// (still identifiable, just not reformatted), "shared"/"bdr"/"ae" stay
+// as their plain label.
+function bucketLabel(bucket) {
+  if (bucket.startsWith("team:")) {
+    const slug = bucket.slice(5).replace(/-/g, " ");
+    return slug.replace(/\b\w/g, c => c.toUpperCase()) + " Team";
+  }
+  return bucket;
+}
+
 export const handler = async (event, context) => {
   return withAuth(async (event, context, user) => {
-    // TEMPORARY diagnostic — GET ?debug=1. Reveals whether this function
-    // actually sees a value for AZURE_ONBOARDING_SAS_TOKEN at all, without
-    // exposing the real value — just its length and first/last few
-    // characters, enough to confirm identity. Safe to remove once the
-    // 403 is resolved; this doesn't touch any real functionality.
     const qpDebug = event.queryStringParameters || {};
     if (qpDebug.debug === "1") {
       return {
@@ -98,35 +122,72 @@ export const handler = async (event, context) => {
       };
     }
 
-    // track/team have no equivalent in Cipher today — a person can be
-    // passed in via query param if that ever changes, but for now this
-    // only resolves through managerId (the viewer's own email) and the
-    // shared fallback. Still written as the full 4-tier chain so behavior
-    // stays identical to Onboarding if track/team scoping is added later.
-    const track = qp.track || "bdr";
-    const team = qp.team || null;
-    const managerId = user.email;
+    const hasContent = (d) => d && Array.isArray(d.blocks) && d.blocks.length > 0;
 
+    // ── ?scope=mine — the original single-bucket resolution, kept as an
+    // opt-in in case the all-teams default turns out to be too noisy. ──
+    if (qp.scope === "mine") {
+      const track = qp.track || "bdr";
+      const team = qp.team || null;
+      const managerId = user.email;
+      try {
+        let data = null;
+        if (team) {
+          const teamData = await readJson(`content/team:${team}/${section}.json`, null);
+          if (hasContent(teamData)) data = teamData;
+        }
+        if (!data && managerId) {
+          const managerData = await readJson(`content/${managerId}/${section}.json`, null);
+          if (hasContent(managerData)) data = managerData;
+        }
+        if (!data) {
+          const trackData = await readJson(`content/${track}/${section}.json`, null);
+          if (hasContent(trackData)) data = trackData;
+        }
+        if (!data) data = await readJson(`content/shared/${section}.json`, null);
+        const result = data || { title: TITLES[section], blocks: [] };
+        if (!result.title) result.title = TITLES[section];
+        return { statusCode: 200, body: JSON.stringify(result) };
+      } catch (err) {
+        return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
+      }
+    }
+
+    // ── Default — union of every team/manager bucket's content ──────────
     try {
-      const hasContent = (d) => d && Array.isArray(d.blocks) && d.blocks.length > 0;
-      let data = null;
-      if (team) {
-        const teamData = await readJson(`content/team:${team}/${section}.json`, null);
-        if (hasContent(teamData)) data = teamData;
-      }
-      if (!data && managerId) {
-        const managerData = await readJson(`content/${managerId}/${section}.json`, null);
-        if (hasContent(managerData)) data = managerData;
-      }
-      if (!data) {
-        const trackData = await readJson(`content/${track}/${section}.json`, null);
-        if (hasContent(trackData)) data = trackData;
-      }
-      if (!data) data = await readJson(`content/shared/${section}.json`, null);
+      const allBlobNames = await listBlobNames("content/");
+      // Match content/{bucket}/{section}.json for exactly this section —
+      // bucket can itself contain no further slashes (team:foo, an
+      // email, bdr/ae, shared).
+      const sectionSuffix = `/${section}.json`;
+      const matchingBuckets = allBlobNames
+        .filter(name => name.startsWith("content/") && name.endsWith(sectionSuffix))
+        .map(name => name.slice("content/".length, -sectionSuffix.length))
+        .filter(bucket => !bucket.includes("/")); // skip anything unexpectedly nested
 
-      const result = data || { title: TITLES[section], blocks: [] };
-      if (!result.title) result.title = TITLES[section];
-      return { statusCode: 200, body: JSON.stringify(result) };
+      const results = await Promise.all(
+        matchingBuckets.map(async bucket => {
+          const data = await readJson(`content/${bucket}/${section}.json`, null);
+          return { bucket, data };
+        })
+      );
+
+      const mergedBlocks = [];
+      results.forEach(({ bucket, data }) => {
+        if (!hasContent(data)) return;
+        const label = bucketLabel(bucket);
+        data.blocks.forEach(block => {
+          mergedBlocks.push({
+            ...block,
+            folder: block.folder ? `${label}/${block.folder}` : label,
+          });
+        });
+      });
+
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ title: TITLES[section], blocks: mergedBlocks }),
+      };
     } catch (err) {
       return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
     }
