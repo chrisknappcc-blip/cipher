@@ -6536,6 +6536,249 @@ export const handler = async (event, context) => {
       }
     }
 
+    // GET /meetings-tracker — dedicated Meetings tab data.
+    // Pulls HubSpot + Outlook meetings across a wide window (past 30 days
+    // through next 30 days, so overdue/completed/scheduled are all visible
+    // in one place), classifies each by status, resolves who organized it
+    // and who attended (from both sources, as requested), and separately
+    // correlates each meeting against Gong-generated recap notes.
+    //
+    // The Gong correlation is real, not a placeholder: confirmed via direct
+    // data checks that Gong's own HubSpot integration auto-logs a Note
+    // (not a Meeting-object field) containing both the recording link and
+    // an AI-written recap, associated with the same contact the meeting
+    // was with. There's no direct foreign key from a meeting to its Gong
+    // note, so this matches them by shared contact + note timestamp within
+    // a few hours of the meeting's start time — the best available signal,
+    // not a guaranteed-exact link.
+    if (method === "GET" && path === "/meetings-tracker") {
+      try {
+        const windowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const windowEnd   = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        const repFilter = qp.repFilter || null; // optional: filter to one rep's meetings
+
+        // ── HubSpot meetings ──────────────────────────────────────────────
+        const meetData = await hsPost(user.userId, "/crm/v3/objects/meetings/search", {
+          filterGroups: [{
+            filters: [
+              { propertyName: "hs_meeting_start_time", operator: "GTE", value: windowStart.toISOString() },
+              { propertyName: "hs_meeting_start_time", operator: "LTE", value: windowEnd.toISOString() },
+            ],
+          }],
+          properties: [
+            "hs_meeting_title", "hs_meeting_start_time", "hs_meeting_end_time",
+            "hs_meeting_outcome", "hubspot_owner_id", "hs_created_by_user_id",
+            "hs_internal_meeting_notes",
+          ],
+          sorts: [{ propertyName: "hs_meeting_start_time", direction: "DESCENDING" }],
+          limit: 100,
+        }).catch(() => ({ results: [] }));
+
+        const hsMeetingsRaw = (meetData.results || []).filter(m =>
+          !String(m.properties?.hs_meeting_title || "").trim().startsWith("[Gong]")
+        );
+
+        // Search API never returns associations (same confirmed HubSpot
+        // limitation fixed elsewhere in this file for deals/tasks) — batch
+        // fetch contact associations separately.
+        const meetingIds = hsMeetingsRaw.map(m => m.id);
+        const meetingContactAssoc = await batchFetchAssociations(user.userId, "meetings", "contacts", meetingIds);
+
+        // Also need ALL contacts per meeting (attendees), not just the first
+        // — meetings/contacts is typically one-to-few, so this is fine at
+        // this volume.
+        const allContactIds = [...new Set(Object.values(meetingContactAssoc).flat())];
+        const contactMap = {};
+        for (let i = 0; i < allContactIds.length; i += 100) {
+          const chunk = allContactIds.slice(i, i + 100);
+          const batch = await hsPost(user.userId, "/crm/v3/objects/contacts/batch/read", {
+            inputs: chunk.map(id => ({ id })),
+            properties: BASE_CONTACT_PROPS,
+          }).catch(() => ({ results: [] }));
+          (batch.results || []).forEach(c => { contactMap[c.id] = normalizeContact(c); });
+        }
+        const contactsByEmail = {};
+        Object.values(contactMap).forEach(c => { if (c.email) contactsByEmail[c.email.toLowerCase()] = c; });
+
+        // Live owner lookup for organizer name resolution.
+        const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 }).catch(() => ({ results: [] }));
+        const ownerNamesById = {};
+        (ownersData.results || []).forEach(o => {
+          ownerNamesById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
+        });
+
+        const hsMeetings = hsMeetingsRaw.map(m => {
+          const p = m.properties || {};
+          const attendeeContactIds = meetingContactAssoc[m.id] || [];
+          const now = Date.now();
+          const startMs = p.hs_meeting_start_time ? new Date(p.hs_meeting_start_time).getTime() : null;
+          const outcome = p.hs_meeting_outcome || null;
+
+          // Status: Scheduled (future) / Completed (marked complete,
+          // regardless of when) / Overdue (start time has passed with no
+          // completion outcome recorded — the specific gap being tracked).
+          let status;
+          if (outcome === "COMPLETED") status = "completed";
+          else if (startMs && startMs > now) status = "scheduled";
+          else status = "overdue";
+
+          const organizerId = p.hubspot_owner_id || p.hs_created_by_user_id || null;
+
+          return {
+            id: `hs-${m.id}`,
+            source: "hubspot",
+            subject: p.hs_meeting_title || "Meeting",
+            startTime: p.hs_meeting_start_time || null,
+            endTime: p.hs_meeting_end_time || null,
+            status,
+            outcome,
+            organizerId,
+            organizerName: organizerId ? (ownerNamesById[String(organizerId)] || null) : null,
+            attendees: attendeeContactIds.map(cid => contactMap[cid]).filter(Boolean),
+            internalNotes: p.hs_internal_meeting_notes || null,
+            url: `https://app.hubspot.com/contacts/39921549/record/0-47/${m.id}`,
+          };
+        });
+
+        // ── Outlook meetings, same window ────────────────────────────────
+        const outlookEvents = await getOutlookCalendarEvents(user.userId, windowStart, windowEnd);
+        const olMeetings = (outlookEvents || [])
+          .filter(ev => !String(ev.subject || "").trim().startsWith("[Gong]"))
+          .map(ev => {
+            const attendeeEmails = (ev.attendees || []).map(a => a.emailAddress?.address?.toLowerCase()).filter(Boolean);
+            const matchedAttendees = attendeeEmails.map(e => contactsByEmail[e]).filter(Boolean);
+            const startMs = ev.start?.dateTime ? new Date(`${ev.start.dateTime}Z`).getTime() : null;
+            const status = startMs && startMs > Date.now() ? "scheduled" : "overdue"; // Outlook has no "completed" outcome concept
+            return {
+              id: `ol-${ev.id}`,
+              source: "outlook",
+              subject: ev.subject || "Meeting",
+              startTime: ev.start?.dateTime ? `${ev.start.dateTime}Z` : null,
+              endTime: ev.end?.dateTime ? `${ev.end.dateTime}Z` : null,
+              status,
+              outcome: null,
+              organizerId: null,
+              organizerName: ev.organizer?.emailAddress?.name || null,
+              attendees: matchedAttendees,
+              // Outlook response status per attendee — the richer signal
+              // requested alongside HubSpot's own attendee associations.
+              attendeeResponses: (ev.attendees || []).map(a => ({
+                email: a.emailAddress?.address || null,
+                name: a.emailAddress?.name || null,
+                response: a.status?.response || "none", // accepted / declined / tentativelyAccepted / none
+              })),
+              internalNotes: null,
+              url: null,
+            };
+          });
+
+        // ── Dedup: same logic as mergeMeetings (shared contact + overlapping
+        // time), kept local rather than reusing the shared util directly,
+        // since this endpoint needs extra fields (outcome, organizer) that
+        // the shared normalizer intentionally doesn't carry for the Now tab.
+        const OVERLAP_TOLERANCE_MIN = 15;
+        const toMs = iso => iso ? new Date(iso).getTime() : null;
+        const overlaps = (aStart, aEnd, bStart, bEnd) => {
+          if (aStart == null || bStart == null) return false;
+          const tol = OVERLAP_TOLERANCE_MIN * 60 * 1000;
+          return aStart - tol <= (bEnd ?? bStart) && bStart - tol <= (aEnd ?? aStart);
+        };
+        const merged = [...hsMeetings];
+        for (const ol of olMeetings) {
+          const olContactEmails = (ol.attendees || []).map(a => a.email?.toLowerCase()).filter(Boolean);
+          const dupe = hsMeetings.find(hs => {
+            const hsContactEmails = (hs.attendees || []).map(a => a.email?.toLowerCase()).filter(Boolean);
+            const sharedContact = hsContactEmails.some(e => olContactEmails.includes(e));
+            return sharedContact && overlaps(toMs(hs.startTime), toMs(hs.endTime), toMs(ol.startTime), toMs(ol.endTime));
+          });
+          if (!dupe) merged.push(ol);
+        }
+
+        // ── Gong note correlation ────────────────────────────────────────
+        // Batch fetch, not per-meeting — collect every contact tied to any
+        // meeting in this window, then one search for gong.io notes across
+        // all of them, then match in memory. Avoids an N+1 pattern that
+        // already caused real performance problems elsewhere in this file.
+        const meetingContactIdsForGong = [...new Set(
+          merged.flatMap(m => (m.attendees || []).map(a => a.id)).filter(Boolean)
+        )];
+        let gongNotesByContact = {};
+        if (meetingContactIdsForGong.length > 0) {
+          for (let i = 0; i < meetingContactIdsForGong.length; i += 100) {
+            const chunk = meetingContactIdsForGong.slice(i, i + 100);
+            const notesData = await hsPost(user.userId, "/crm/v3/objects/notes/search", {
+              filterGroups: [{
+                filters: [{ operator: "CONTAINS_TOKEN", propertyName: "hs_note_body", value: "gong.io" }],
+              }],
+              properties: ["hs_note_body", "hs_body_preview", "hs_timestamp"],
+              limit: 100,
+              associations: [], // Search API ignores this anyway (confirmed elsewhere) — associations pulled separately below
+            }).catch(() => ({ results: [] }));
+            const noteIds = (notesData.results || []).map(n => n.id);
+            const noteContactAssoc = await batchFetchAssociations(user.userId, "notes", "contacts", noteIds);
+            (notesData.results || []).forEach(n => {
+              const linkedContacts = noteContactAssoc[n.id] || [];
+              const relevantContacts = linkedContacts.filter(cid => chunk.includes(cid));
+              if (relevantContacts.length === 0) return;
+              const urlMatch = (n.properties?.hs_body_preview || "").match(/https:\/\/[^\s]*gong\.io[^\s]*/);
+              const gongUrl = urlMatch ? urlMatch[0] : null;
+              if (!gongUrl) return;
+              relevantContacts.forEach(cid => {
+                if (!gongNotesByContact[cid]) gongNotesByContact[cid] = [];
+                gongNotesByContact[cid].push({
+                  timestamp: n.properties?.hs_timestamp,
+                  recap: n.properties?.hs_body_preview || null,
+                  gongUrl,
+                });
+              });
+            });
+          }
+        }
+
+        // Attach best-matching Gong note to each meeting: same contact,
+        // note timestamp within 6 hours of the meeting's start time.
+        const GONG_MATCH_WINDOW_MS = 6 * 60 * 60 * 1000;
+        merged.forEach(m => {
+          const startMs = toMs(m.startTime);
+          if (!startMs) return;
+          let best = null, bestDelta = Infinity;
+          (m.attendees || []).forEach(a => {
+            (gongNotesByContact[a.id] || []).forEach(note => {
+              const noteMs = toMs(note.timestamp);
+              if (noteMs == null) return;
+              const delta = Math.abs(noteMs - startMs);
+              if (delta <= GONG_MATCH_WINDOW_MS && delta < bestDelta) { best = note; bestDelta = delta; }
+            });
+          });
+          if (best) { m.gongUrl = best.gongUrl; m.gongRecap = best.recap; }
+        });
+
+        // ── Optional rep filter (applied last, after merge/correlation) ──
+        let result = merged;
+        if (repFilter) {
+          result = result.filter(m =>
+            m.organizerName === repFilter ||
+            (m.attendees || []).some(a => a.assignedBdr === repFilter || a.primaryOutreachRep === repFilter)
+          );
+        }
+
+        result.sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0));
+
+        return ok({
+          meetings: result,
+          counts: {
+            scheduled: result.filter(m => m.status === "scheduled").length,
+            completed: result.filter(m => m.status === "completed").length,
+            overdue:   result.filter(m => m.status === "overdue").length,
+            withGongRecap: result.filter(m => m.gongUrl).length,
+          },
+        });
+      } catch (err) {
+        console.error("[meetings-tracker] Error:", err.message);
+        return error(500, `Meetings tracker error: ${err.message}`);
+      }
+    }
+
     // GET /top5 — read the cached Top 5 picks from the last scheduled run
     // (8am / 1pm ET). This never calls Claude itself; the scheduler writes
     // this blob, this route just reads it.
