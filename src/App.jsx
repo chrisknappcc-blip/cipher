@@ -470,8 +470,10 @@ function ConnectHubSpot({ user, onConnect }) {
   const startOAuth = async () => {
     setLoading(true); setError(null)
     try {
+      const jwt = typeof user?.jwt === 'function' ? await user.jwt() : await netlifyIdentity.currentUser()?.jwt()
+      if (!jwt) throw new Error('Not authenticated — please sign out and sign in again.')
       const r = await fetch('/api/hubspot/auth/connect', {
-        headers: { Authorization: `Bearer ${await user.jwt()}` }
+        headers: { Authorization: `Bearer ${jwt}` }
       })
       const d = await r.json()
       if (d.authUrl) window.location.href = d.authUrl
@@ -485,7 +487,8 @@ function ConnectHubSpot({ user, onConnect }) {
       setLoading(true)
       ;(async () => {
         try {
-          const jwt = await user.jwt()
+          const jwt = typeof user?.jwt === 'function' ? await user.jwt() : await netlifyIdentity.currentUser()?.jwt()
+          if (!jwt) throw new Error('Not authenticated — please sign out and sign in again.')
           const r = await fetch(`/api/hubspot/auth/callback${window.location.search}`, {
             headers: { Authorization: `Bearer ${jwt}` }
           })
