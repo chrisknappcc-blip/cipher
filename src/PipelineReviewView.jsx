@@ -91,6 +91,21 @@ export default function PipelineReviewView({ getToken }) {
   // keeps data current while the meeting runs, discussed tracking persists
   // so a mid-meeting reload doesn't lose progress.
   const [presentationMode, setPresentationMode] = useState(false)
+
+  // ── Snapshot / comparison feature ──────────────────────────────────
+  const [subView, setSubView] = useState('review') // 'review' | 'snapshots'
+  const [snapshotsList, setSnapshotsList] = useState([])
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false)
+  const [snapshotsError, setSnapshotsError] = useState(null)
+  const [snapshotTaking, setSnapshotTaking] = useState(false)
+  const [snapshotMessage, setSnapshotMessage] = useState(null)
+  const [compareIdA, setCompareIdA] = useState('')
+  const [compareIdB, setCompareIdB] = useState('')
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [compareError, setCompareError] = useState(null)
+  const [snapA, setSnapA] = useState(null)
+  const [snapB, setSnapB] = useState(null)
+  const [drillDownOpen, setDrillDownOpen] = useState(false)
   const [lastRefreshed, setLastRefreshed] = useState(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [discussedIds, setDiscussedIds] = useState(new Set())
@@ -384,6 +399,123 @@ export default function PipelineReviewView({ getToken }) {
     hasSetInitialCollapse.current = true
   }, [sections])
 
+  // ── Snapshot / comparison logic ──────────────────────────────────────
+  // Captures exactly what's currently on screen — sortedDeals, the final
+  // filtered+sorted array that actually feeds the visible sections —
+  // rather than every deal in the pipeline regardless of active filters.
+  // discussedIds/focusIds are merged in per-deal since those live as
+  // separate client-side state, not on the deal object itself.
+  const takeSnapshot = async () => {
+    if (sortedDeals.length === 0) {
+      setSnapshotMessage({ type: 'error', text: 'Nothing currently visible to snapshot — adjust your filters first.' })
+      return
+    }
+    setSnapshotTaking(true)
+    setSnapshotMessage(null)
+    try {
+      const dealsForSnapshot = sortedDeals.map(d => ({
+        id: d.id,
+        name: d.name,
+        pipelineId: d.pipelineId,
+        pipelineLabel: d.pipelineLabel,
+        stageId: d.stageId,
+        stageLabel: d.stageLabel,
+        amount: d.amount,
+        closeDate: d.closeDate,
+        currentStatus: d.currentStatus,
+        nextStep: d.nextStep,
+        ownerName: d.ownerName,
+        companyName: d.companyName,
+        lastContact: d.lastContact,
+        discussed: discussedIds.has(d.id),
+        focus: focusIds.has(d.id),
+      }))
+      const pipelineLabels = [...new Set(dealsForSnapshot.map(d => d.pipelineLabel).filter(Boolean))]
+      const data = await apiFetch('/api/hubspot/pipeline-snapshots', getToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pipelineLabel: pipelineLabels.join(', ') || 'Pipeline Review',
+          deals: dealsForSnapshot,
+        }),
+      })
+      setSnapshotMessage({ type: 'success', text: `Snapshot saved — ${dealsForSnapshot.length} deals captured.` })
+    } catch (e) {
+      setSnapshotMessage({ type: 'error', text: e.message })
+    } finally {
+      setSnapshotTaking(false)
+    }
+  }
+
+  const fetchSnapshotsList = async () => {
+    setSnapshotsLoading(true)
+    setSnapshotsError(null)
+    try {
+      const data = await apiFetch('/api/hubspot/pipeline-snapshots?metaOnly=1', getToken)
+      setSnapshotsList((data.snapshots || []).sort((a, b) => new Date(b.takenAt) - new Date(a.takenAt)))
+    } catch (e) {
+      setSnapshotsError(e.message)
+    } finally {
+      setSnapshotsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (subView === 'snapshots') fetchSnapshotsList()
+  }, [subView])
+
+  const runComparison = async () => {
+    if (!compareIdA || !compareIdB) return
+    setCompareLoading(true)
+    setCompareError(null)
+    setSnapA(null); setSnapB(null)
+    try {
+      const [a, b] = await Promise.all([
+        apiFetch(`/api/hubspot/pipeline-snapshots?id=${encodeURIComponent(compareIdA)}`, getToken),
+        apiFetch(`/api/hubspot/pipeline-snapshots?id=${encodeURIComponent(compareIdB)}`, getToken),
+      ])
+      // Always compare in chronological order regardless of which
+      // snapshot was picked as "A" vs "B" in the dropdowns — "changes"
+      // should always read as earlier-to-later, not depend on click order.
+      const [earlier, later] = new Date(a.takenAt) <= new Date(b.takenAt) ? [a, b] : [b, a]
+      setSnapA(earlier)
+      setSnapB(later)
+    } catch (e) {
+      setCompareError(e.message)
+    } finally {
+      setCompareLoading(false)
+    }
+  }
+
+  // Computes the actual diff between two snapshots — matched by deal id.
+  // Returns both per-deal change records (for drill-down) and aggregate
+  // counts (for the summary).
+  const snapshotDiff = useMemo(() => {
+    if (!snapA || !snapB) return null
+    const dealsA = new Map((snapA.deals || []).map(d => [d.id, d]))
+    const dealsB = new Map((snapB.deals || []).map(d => [d.id, d]))
+    const allIds = new Set([...dealsA.keys(), ...dealsB.keys()])
+
+    const newDeals = [], removedDeals = [], stageChanges = [], statusChanges = [], discussedChanges = [], amountChanges = [], closeDateChanges = []
+
+    allIds.forEach(id => {
+      const before = dealsA.get(id)
+      const after = dealsB.get(id)
+      if (!before && after) { newDeals.push(after); return }
+      if (before && !after) { removedDeals.push(before); return }
+      if (before.stageLabel !== after.stageLabel) stageChanges.push({ id, name: after.name, before: before.stageLabel, after: after.stageLabel })
+      if ((before.currentStatus || '') !== (after.currentStatus || '')) statusChanges.push({ id, name: after.name, before: before.currentStatus, after: after.currentStatus })
+      if (before.discussed !== after.discussed) discussedChanges.push({ id, name: after.name, before: before.discussed, after: after.discussed })
+      if (Number(before.amount || 0) !== Number(after.amount || 0)) amountChanges.push({ id, name: after.name, before: before.amount, after: after.amount })
+      if ((before.closeDate || '') !== (after.closeDate || '')) closeDateChanges.push({ id, name: after.name, before: before.closeDate, after: after.closeDate })
+    })
+
+    return {
+      newDeals, removedDeals, stageChanges, statusChanges, discussedChanges, amountChanges, closeDateChanges,
+      dealsA, dealsB,
+    }
+  }, [snapA, snapB])
+
   const clearFilters = () => {
     setMinAmount(''); setMaxAmount(''); setCloseBefore(''); setCloseAfter(''); setStaleOnly(false)
   }
@@ -478,6 +610,20 @@ export default function PipelineReviewView({ getToken }) {
       zoom: presentationMode ? 1.3 : 1,
     }}>
 
+      {/* ── Sub-view toggle: Review / Snapshots ── */}
+      <div style={{ display: 'flex', background: 'var(--bg-panel)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', padding: 3, gap: 2, width: 'fit-content' }}>
+        {[{ k: 'review', l: 'Review' }, { k: 'snapshots', l: 'Snapshots' }].map(({ k, l }) => (
+          <button key={k} onClick={() => setSubView(k)}
+            style={{ fontSize: 12.5, padding: '5px 14px', borderRadius: 'var(--radius)', border: 'none', cursor: 'pointer',
+              fontWeight: subView === k ? 500 : 400, background: subView === k ? 'var(--bg-secondary)' : 'transparent',
+              color: subView === k ? 'var(--text)' : 'var(--text-secondary)' }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {subView === 'review' && (
+      <>
       {/* ── Dedicated header: pipeline selector, team/search, sort, filters ── */}
       <div style={{ padding: '10px 18px', background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
 
@@ -611,11 +757,21 @@ export default function PipelineReviewView({ getToken }) {
               {opt.label}{sortField === opt.key && (sortDir === 'asc' ? ' ↑' : ' ↓')}
             </button>
           ))}
+          <button onClick={takeSnapshot} disabled={snapshotTaking}
+            style={{ marginLeft: 'auto', fontSize: 11.5, padding: '5px 10px', borderRadius: 8, cursor: snapshotTaking ? 'not-allowed' : 'pointer', background: snapshotTaking ? 'var(--bg)' : 'var(--nav-resources)', color: snapshotTaking ? 'var(--text-tertiary)' : '#fff', border: 'none', fontWeight: 500 }}>
+            {snapshotTaking ? 'Saving…' : '📸 Take Snapshot'}
+          </button>
           <button onClick={() => setFiltersOpen(o => !o)}
-            style={{ marginLeft: 'auto', fontSize: 11.5, padding: '5px 10px', borderRadius: 8, cursor: 'pointer', background: filtersActive ? 'var(--manager-color)' : 'var(--bg-secondary)', color: filtersActive ? '#fff' : 'var(--text-secondary)', border: '1px solid ' + (filtersActive ? 'var(--manager-color)' : 'var(--border)') }}>
+            style={{ fontSize: 11.5, padding: '5px 10px', borderRadius: 8, cursor: 'pointer', background: filtersActive ? 'var(--manager-color)' : 'var(--bg-secondary)', color: filtersActive ? '#fff' : 'var(--text-secondary)', border: '1px solid ' + (filtersActive ? 'var(--manager-color)' : 'var(--border)') }}>
             Filters{filtersActive ? ' •' : ''}
           </button>
         </div>
+
+        {snapshotMessage && (
+          <div style={{ fontSize: 11.5, marginBottom: 6, color: snapshotMessage.type === 'error' ? 'var(--red)' : 'var(--green, #16a34a)' }}>
+            {snapshotMessage.text}
+          </div>
+        )}
 
         {filtersOpen && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 14, padding: 12, background: 'var(--bg-secondary)', borderRadius: 10 }}>
@@ -877,6 +1033,174 @@ export default function PipelineReviewView({ getToken }) {
         )}
       </div>
       </div>
+      </>
+      )}
+
+      {subView === 'snapshots' && (
+        <div style={{ padding: 22, background: 'var(--bg-panel)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-soft)' }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Pipeline Snapshots</h2>
+          <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)', marginBottom: 18 }}>
+            Compare two past snapshots to see what changed between review sessions.
+          </div>
+
+          {snapshotsError && (
+            <div style={{ background: 'var(--red-light)', color: 'var(--red)', padding: '10px 14px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 16 }}>
+              {snapshotsError}
+            </div>
+          )}
+
+          {snapshotsLoading ? (
+            <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>Loading snapshots…</div>
+          ) : snapshotsList.length === 0 ? (
+            <div style={{ padding: '32px 16px', textAlign: 'center', border: '1px dashed var(--border-strong)', borderRadius: 'var(--radius)', color: 'var(--text-tertiary)', fontSize: 13 }}>
+              No snapshots yet — take one from the Review tab after your next pipeline walkthrough.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginBottom: 20, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 4 }}>Earlier snapshot</div>
+                  <select value={compareIdA} onChange={e => setCompareIdA(e.target.value)}
+                    style={{ padding: '8px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13, minWidth: 260 }}>
+                    <option value="">Select a snapshot…</option>
+                    {snapshotsList.map(s => (
+                      <option key={s.id} value={s.id}>
+                        {new Date(s.takenAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })} · {s.pipelineLabel} · {s.dealCount} deals
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 4 }}>Later snapshot</div>
+                  <select value={compareIdB} onChange={e => setCompareIdB(e.target.value)}
+                    style={{ padding: '8px 10px', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13, minWidth: 260 }}>
+                    <option value="">Select a snapshot…</option>
+                    {snapshotsList.map(s => (
+                      <option key={s.id} value={s.id}>
+                        {new Date(s.takenAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })} · {s.pipelineLabel} · {s.dealCount} deals
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button onClick={runComparison} disabled={!compareIdA || !compareIdB || compareLoading}
+                  style={{ padding: '9px 18px', background: (!compareIdA || !compareIdB || compareLoading) ? 'var(--bg-secondary)' : 'var(--accent)', color: (!compareIdA || !compareIdB || compareLoading) ? 'var(--text-tertiary)' : '#fff', border: 'none', borderRadius: 'var(--radius)', fontSize: 13, fontWeight: 500, cursor: (!compareIdA || !compareIdB || compareLoading) ? 'not-allowed' : 'pointer' }}>
+                  {compareLoading ? 'Comparing…' : 'Compare'}
+                </button>
+              </div>
+
+              {compareError && (
+                <div style={{ background: 'var(--red-light)', color: 'var(--red)', padding: '10px 14px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 16 }}>
+                  {compareError}
+                </div>
+              )}
+
+              {snapshotDiff && (
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 14 }}>
+                    Comparing {new Date(snapA.takenAt).toLocaleDateString()} → {new Date(snapB.takenAt).toLocaleDateString()}
+                  </div>
+
+                  {/* Summary counts */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 8, marginBottom: 18 }}>
+                    {[
+                      { label: 'New Deals', count: snapshotDiff.newDeals.length, color: 'var(--green, #16a34a)' },
+                      { label: 'Removed', count: snapshotDiff.removedDeals.length, color: 'var(--text-tertiary)' },
+                      { label: 'Moved Stage', count: snapshotDiff.stageChanges.length, color: 'var(--accent)' },
+                      { label: 'Status Updated', count: snapshotDiff.statusChanges.length, color: 'var(--amber, #d97706)' },
+                      { label: 'Discussed Changed', count: snapshotDiff.discussedChanges.length, color: 'var(--nav-resources)' },
+                      { label: 'Amount Changed', count: snapshotDiff.amountChanges.length, color: 'var(--red)' },
+                    ].map(({ label, count, color }) => (
+                      <div key={label} style={{ padding: '12px 10px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', textAlign: 'center' }}>
+                        <div style={{ fontSize: 20, fontWeight: 700, color }}>{count}</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 2 }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button onClick={() => setDrillDownOpen(o => !o)}
+                    style={{ fontSize: 12.5, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500, padding: 0, marginBottom: 12 }}>
+                    {drillDownOpen ? '▼ Hide full detail' : '▶ Show full detail'}
+                  </button>
+
+                  {drillDownOpen && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                      {snapshotDiff.stageChanges.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.4px', color: 'var(--text-tertiary)', marginBottom: 8 }}>Stage Changes</div>
+                          {snapshotDiff.stageChanges.map(c => (
+                            <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', marginBottom: 4, fontSize: 12.5 }}>
+                              <span style={{ fontWeight: 500 }}>{c.name}</span>
+                              <span style={{ color: 'var(--text-secondary)' }}>{c.before || '—'} → <strong style={{ color: 'var(--accent)' }}>{c.after || '—'}</strong></span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {snapshotDiff.statusChanges.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.4px', color: 'var(--text-tertiary)', marginBottom: 8 }}>Status Text Changes</div>
+                          {snapshotDiff.statusChanges.map(c => (
+                            <div key={c.id} style={{ padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', marginBottom: 4, fontSize: 12.5 }}>
+                              <div style={{ fontWeight: 500, marginBottom: 3 }}>{c.name}</div>
+                              <div style={{ color: 'var(--text-tertiary)' }}>Before: {c.before || '—'}</div>
+                              <div style={{ color: 'var(--text)' }}>After: {c.after || '—'}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {snapshotDiff.discussedChanges.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.4px', color: 'var(--text-tertiary)', marginBottom: 8 }}>Discussed Status Changed</div>
+                          {snapshotDiff.discussedChanges.map(c => (
+                            <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', marginBottom: 4, fontSize: 12.5 }}>
+                              <span style={{ fontWeight: 500 }}>{c.name}</span>
+                              <span>{c.before ? 'Discussed' : 'Not discussed'} → <strong>{c.after ? 'Discussed' : 'Not discussed'}</strong></span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {snapshotDiff.amountChanges.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.4px', color: 'var(--text-tertiary)', marginBottom: 8 }}>Amount Changes</div>
+                          {snapshotDiff.amountChanges.map(c => (
+                            <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', marginBottom: 4, fontSize: 12.5 }}>
+                              <span style={{ fontWeight: 500 }}>{c.name}</span>
+                              <span>{formatAmount(c.before) || '—'} → <strong>{formatAmount(c.after) || '—'}</strong></span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {snapshotDiff.newDeals.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.4px', color: 'var(--text-tertiary)', marginBottom: 8 }}>New Deals</div>
+                          {snapshotDiff.newDeals.map(d => (
+                            <div key={d.id} style={{ padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', marginBottom: 4, fontSize: 12.5 }}>
+                              <strong>{d.name}</strong> — {d.stageLabel} · {formatAmount(d.amount) || '—'}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {snapshotDiff.removedDeals.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.4px', color: 'var(--text-tertiary)', marginBottom: 8 }}>No Longer Visible</div>
+                          {snapshotDiff.removedDeals.map(d => (
+                            <div key={d.id} style={{ padding: '8px 12px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)', marginBottom: 4, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+                              {d.name} — was {d.stageLabel}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {snapshotDiff.stageChanges.length === 0 && snapshotDiff.statusChanges.length === 0 && snapshotDiff.discussedChanges.length === 0 &&
+                       snapshotDiff.amountChanges.length === 0 && snapshotDiff.newDeals.length === 0 && snapshotDiff.removedDeals.length === 0 && (
+                        <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>No changes detected between these two snapshots.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
