@@ -15,6 +15,10 @@ function meetingConfirmationsBlobUrl(userId) {
   const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
   return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/meeting-confirmations-${userId}.json${sas}`;
 }
+function pipelineSnapshotsBlobUrl() {
+  const sas = (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+  return `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}/pipeline-snapshots.json${sas}`;
+}
 // Tracks which meeting IDs already got an auto-generated confirmation to-do.
 // Lives in Cipher's own storage since we never write this flag back to HubSpot.
 async function getConfirmedMeetingIds(userId) {
@@ -6488,6 +6492,87 @@ export const handler = async (event, context) => {
         }
       } catch (err) {
         return ok({ gapState: {}, gapLastRun: {}, error: err.message });
+      }
+    }
+
+    // GET  /hubspot/pipeline-snapshots           — list all snapshots
+    //      ?metaOnly=1 strips each snapshot's full deal array, returning
+    //      just id/takenAt/takenBy/pipelineLabel/dealCount — used for the
+    //      "pick two to compare" list, so that view doesn't have to
+    //      download every snapshot's full deal data just to show a list.
+    //      ?id=X returns one specific snapshot's full data, deals
+    //      included — used once two snapshots are actually selected for
+    //      comparison.
+    // POST /hubspot/pipeline-snapshots           — append a new snapshot
+    //      Stored as one JSON array in a single blob (not per-snapshot
+    //      files) — the expected volume here is periodic review
+    //      snapshots, not high-frequency writes, so reading/writing the
+    //      whole array each time is simple and more than fast enough.
+    if (path === "/pipeline-snapshots") {
+      try {
+        if (method === "GET") {
+          if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return ok({ snapshots: [] });
+          const res = await fetch(pipelineSnapshotsBlobUrl());
+          if (res.status === 404) return ok({ snapshots: [] });
+          if (!res.ok) return ok({ snapshots: [] });
+          const data = await res.json();
+          const all = Array.isArray(data.snapshots) ? data.snapshots : [];
+
+          if (qp.id) {
+            const found = all.find(s => s.id === qp.id);
+            return found ? ok(found) : error(404, "Snapshot not found");
+          }
+          if (qp.metaOnly === "1") {
+            return ok({
+              snapshots: all.map(s => ({
+                id: s.id,
+                takenAt: s.takenAt,
+                takenBy: s.takenBy,
+                pipelineLabel: s.pipelineLabel,
+                dealCount: (s.deals || []).length,
+              })),
+            });
+          }
+          return ok({ snapshots: all });
+        }
+        if (method === "POST") {
+          if (!AZURE_ACCOUNT || !AZURE_SAS_TOKEN) return error(500, "Snapshot storage not configured");
+          const body = JSON.parse(event.body || "{}");
+          if (!Array.isArray(body.deals) || body.deals.length === 0) {
+            return error(400, "A snapshot needs at least one deal — nothing was visible to capture.");
+          }
+
+          const existingRes = await fetch(pipelineSnapshotsBlobUrl());
+          let existing = [];
+          if (existingRes.ok) {
+            const existingData = await existingRes.json().catch(() => ({}));
+            existing = Array.isArray(existingData.snapshots) ? existingData.snapshots : [];
+          }
+
+          const snapshot = {
+            id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            takenAt: new Date().toISOString(),
+            takenBy: user.email,
+            pipelineLabel: body.pipelineLabel || "Pipeline Review",
+            deals: body.deals,
+          };
+          existing.push(snapshot);
+
+          const payload = JSON.stringify({ snapshots: existing });
+          const putRes = await fetch(pipelineSnapshotsBlobUrl(), {
+            method: "PUT",
+            headers: {
+              "Content-Type":   "application/json",
+              "x-ms-blob-type": "BlockBlob",
+              "Content-Length": String(Buffer.byteLength(payload)),
+            },
+            body: payload,
+          });
+          if (!putRes.ok) return error(500, `Azure write failed: ${putRes.status}`);
+          return ok({ saved: true, snapshot: { id: snapshot.id, takenAt: snapshot.takenAt } });
+        }
+      } catch (err) {
+        return error(500, `Snapshot error: ${err.message}`);
       }
     }
 
