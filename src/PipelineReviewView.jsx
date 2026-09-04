@@ -291,19 +291,26 @@ export default function PipelineReviewView({ getToken }) {
   // pipeline name only prefixes the section heading when more than one
   // pipeline is actually being shown, so selecting just one still looks
   // exactly like before.
-  // Custom bucket order requested — named stages sort into this exact
-  // sequence; anything not in this list keeps its original HubSpot order,
-  // appended after the named ones.
-  const STAGE_PRIORITY = ['Procurement', 'Pricing', 'Value Prop', 'Engaged', 'Expansion', 'Revisit']
-  const sortStagesByPriority = (stages) => {
-    return [...stages].sort((a, b) => {
-      const ai = STAGE_PRIORITY.findIndex(p => (a.label || '').includes(p))
-      const bi = STAGE_PRIORITY.findIndex(p => (b.label || '').includes(p))
-      if (ai === -1 && bi === -1) return 0
-      if (ai === -1) return 1
-      if (bi === -1) return -1
-      return ai - bi
-    })
+  //
+  // The backend's PIPELINE_STAGES config lists stages in HubSpot's native,
+  // configured order — confirmed early-to-late (e.g. "Qualified" first,
+  // "Contracting/Legal" right before close, for New Business Deal
+  // Pipeline). Reversing that puts the stage closest to closing at the
+  // top, correctly for ANY pipeline regardless of its specific stage
+  // names — this replaces an earlier hardcoded keyword-matching approach
+  // that couldn't actually work across three pipelines with completely
+  // different, non-overlapping stage names.
+  //
+  // Revisit/Revist (confirmed present, with that exact typo, in two of
+  // the three pipelines) is filtered out — it's a parked stage sitting
+  // outside the normal progression, not a real step toward closing.
+  // Closed/lost/won stages need no filter here at all — they're already
+  // fully excluded server-side via closedStages before deals are ever
+  // fetched, so they never reach this component in the first place.
+  const orderStagesForDisplay = (stages) => {
+    return [...stages]
+      .reverse()
+      .filter(s => !/revisit|revist/i.test(s.label || ''))
   }
 
   const showPipelinePrefix = companyModeActive || selectedPipelines.size > 1
@@ -323,7 +330,7 @@ export default function PipelineReviewView({ getToken }) {
     const result = []
     Object.keys(byPipeline).filter(pid => !hiddenPipelines.has(pid) || selectedPipelines.has(pid)).forEach(pid => {
       const pLabel = config[pid]?.label || 'Unknown pipeline'
-      const stageOrder = sortStagesByPriority(config[pid]?.stages || [])
+      const stageOrder = orderStagesForDisplay(config[pid]?.stages || [])
       stageOrder.forEach(stage => {
         const stageDeals = byPipeline[pid].filter(d => d.stageId === stage.id)
         if (stageDeals.length > 0) {
@@ -858,42 +865,40 @@ export default function PipelineReviewView({ getToken }) {
                           background: selectedDealId === deal.id ? 'var(--bg-hover)' : 'var(--bg-secondary)',
                           opacity: isDiscussed ? 0.55 : 1,
                         }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                              <button onClick={(e) => toggleDiscussed(deal.id, e)} title={isDiscussed ? 'Mark not discussed' : 'Mark discussed'}
-                                style={{
-                                  width: 18, height: 18, borderRadius: 6, flexShrink: 0, cursor: 'pointer',
-                                  border: '1.5px solid ' + (isDiscussed ? 'var(--accent)' : 'var(--border-strong)'),
-                                  background: isDiscussed ? 'var(--accent)' : 'var(--bg)',
-                                  color: '#fff', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                }}>
-                                {isDiscussed ? '✓' : ''}
-                              </button>
-                              <button onClick={(e) => toggleFocus(deal.id, e)} title={isFocused ? 'Remove focus' : 'Mark as Focus Deal'}
-                                style={{
-                                  display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5, fontWeight: 500, cursor: 'pointer', flexShrink: 0,
-                                  padding: '4px 9px', borderRadius: 8,
-                                  border: '1.5px solid ' + (isFocused ? 'var(--pin-color)' : 'var(--border-strong)'),
-                                  background: isFocused ? 'var(--pin-color)' : 'var(--bg)',
-                                  color: isFocused ? '#fff' : 'var(--text-secondary)',
-                                }}>
-                                <span>★</span> Focus
-                              </button>
-                              <a href={deal.hubspotDealUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-                                style={{ fontSize: 13.5, fontWeight: 500, textDecoration: isDiscussed ? 'line-through' : 'none', color: 'var(--text)' }}>
-                                {deal.name}
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9, marginBottom: 4 }}>
+                            <button onClick={(e) => toggleDiscussed(deal.id, e)} title={isDiscussed ? 'Mark not discussed' : 'Mark discussed'}
+                              style={{
+                                width: 18, height: 18, borderRadius: 6, flexShrink: 0, cursor: 'pointer', marginTop: 1,
+                                border: '1.5px solid ' + (isDiscussed ? 'var(--accent)' : 'var(--border-strong)'),
+                                background: isDiscussed ? 'var(--accent)' : 'var(--bg)',
+                                color: '#fff', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              }}>
+                              {isDiscussed ? '✓' : ''}
+                            </button>
+                            <button onClick={(e) => toggleFocus(deal.id, e)} title={isFocused ? 'Remove focus' : 'Mark as Focus Deal'}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5, fontWeight: 500, cursor: 'pointer', flexShrink: 0,
+                                padding: '4px 9px', borderRadius: 8,
+                                border: '1.5px solid ' + (isFocused ? 'var(--pin-color)' : 'var(--border-strong)'),
+                                background: isFocused ? 'var(--pin-color)' : 'var(--bg)',
+                                color: isFocused ? '#fff' : 'var(--text-secondary)',
+                              }}>
+                              <span>★</span> Focus
+                            </button>
+                            <a href={deal.hubspotDealUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                              style={{ fontSize: 13.5, fontWeight: 500, textDecoration: isDiscussed ? 'line-through' : 'none', color: 'var(--text)', flex: 1, minWidth: 0, overflowWrap: 'break-word', lineHeight: 1.35 }}>
+                              {deal.name}
+                            </a>
+                          </div>
+                          <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', marginBottom: 8, overflowWrap: 'break-word' }}>
+                            {deal.hubspotCompanyUrl ? (
+                              <a href={deal.hubspotCompanyUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                                style={{ color: 'var(--text-tertiary)' }}>
+                                {deal.companyName || 'No company'}
                               </a>
-                            </div>
-                            <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                              {deal.hubspotCompanyUrl ? (
-                                <a href={deal.hubspotCompanyUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-                                  style={{ color: 'var(--text-tertiary)' }}>
-                                  {deal.companyName || 'No company'}
-                                </a>
-                              ) : (deal.companyName || 'No company')}
-                              {' · '}{deal.ownerName || 'Unassigned'}
-                              {companyModeActive && deal.stageLabel && ` · ${deal.stageLabel}`}
-                            </div>
+                            ) : (deal.companyName || 'No company')}
+                            {' · '}{deal.ownerName || 'Unassigned'}
+                            {companyModeActive && deal.stageLabel && ` · ${deal.stageLabel}`}
                           </div>
 
                           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
@@ -973,6 +978,22 @@ export default function PipelineReviewView({ getToken }) {
                 )}
               </div>
             </div>
+
+            {selectedDeal.keyContacts && selectedDeal.keyContacts.length > 0 && (
+              <div style={{ marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 14 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 6 }}>
+                  Key Contacts
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {selectedDeal.keyContacts.map((c, i) => (
+                    <div key={i} style={{ fontSize: 13 }}>
+                      <span style={{ fontWeight: 500, color: 'var(--text)' }}>{c.name}</span>
+                      {c.title && <span style={{ color: 'var(--text-tertiary)' }}> · {c.title}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 4 }}>
               Current status
