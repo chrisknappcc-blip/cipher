@@ -7241,7 +7241,10 @@ export const handler = async (event, context) => {
       }
 
       // All associated contacts across all deals, chunked into batches of 100
-      // (HubSpot batch/read's practical cap).
+      // (HubSpot batch/read's practical cap). Already being fetched for
+      // last-contact calculation — now also pulling name/title so the
+      // context panel can show key contacts per deal without a second
+      // round-trip.
       const allContactIds = [...new Set(
         deals.flatMap(d => (d.associations?.contacts?.results || []).map(c => c.id))
       )];
@@ -7250,10 +7253,16 @@ export const handler = async (event, context) => {
         const chunk = allContactIds.slice(i, i + 100);
         const contactData = await hsPost(userId, "/crm/v3/objects/contacts/batch/read", {
           inputs: chunk.map(id => ({ id })),
-          properties: ["notes_last_updated"],
+          properties: ["notes_last_updated", "firstname", "lastname", "jobtitle"],
         }).catch(() => ({ results: [] }));
         (contactData.results || []).forEach(c => {
-          contactsById[c.id] = c.properties?.notes_last_updated || null;
+          const name = `${c.properties?.firstname || ""} ${c.properties?.lastname || ""}`.trim();
+          contactsById[c.id] = {
+            id: c.id,
+            name: name || null,
+            title: c.properties?.jobtitle || null,
+            lastContact: c.properties?.notes_last_updated || null,
+          };
         });
       }
 
@@ -7261,7 +7270,14 @@ export const handler = async (event, context) => {
         const companyId = d.associations?.companies?.results?.[0]?.id;
         const company = companiesById[companyId] || {};
         const contactIds = (d.associations?.contacts?.results || []).map(c => c.id);
-        const contactLastContacts = contactIds.map(id => contactsById[id]).filter(Boolean);
+        const associatedContacts = contactIds.map(id => contactsById[id]).filter(Boolean);
+        const contactLastContacts = associatedContacts.map(c => c.lastContact).filter(Boolean);
+        // Name/title only, for the context panel's Key Contacts section —
+        // deliberately not including lastContact here, that's already
+        // rolled up into the deal-level lastContact/lastContactSource below.
+        const keyContacts = associatedContacts
+          .filter(c => c.name)
+          .map(c => ({ name: c.name, title: c.title }));
 
         // Take the most recent across deal, company, AND all associated
         // contacts — any one of these can hold the real "last touched"
@@ -7302,6 +7318,7 @@ export const handler = async (event, context) => {
           lastContactSource: winner.source,
           activityCount: d.properties?.num_notes ? Number(d.properties.num_notes) : 0,
           closeDate: d.properties?.closedate || null,
+          keyContacts,
         };
       });
     }
