@@ -294,6 +294,7 @@ export default function App() {
   const [tokenDone,  setTokenDone]  = useState(false)
   const [theme, setTheme] = useState(() => localStorage.getItem('cipher-theme') || 'light')
   const [colorTheme, setColorTheme] = useState(() => localStorage.getItem('cipher-color-theme') || 'navy')
+  const [customAccent, setCustomAccent] = useState(() => localStorage.getItem('cipher-custom-accent') || null)
   const [fontSize, setFontSize] = useState(() => localStorage.getItem('cipher-font-size') || 'medium')
 
   // Apply theme to document root so CSS [data-theme="dark"] selector works
@@ -307,6 +308,27 @@ export default function App() {
     document.documentElement.dataset.fontSize = fontSize
   }, [fontSize])
 
+  // Custom accent color — deliberately a SEPARATE override layer on top of
+  // whichever named preset is active, not a replacement for the preset
+  // system. Inline styles on the root element take priority over the
+  // attribute-selector CSS rules that set these same variables per named
+  // theme, so setting them here overrides the preset's accent colors
+  // without touching its backgrounds/borders/text at all. Clearing (null)
+  // removes the inline overrides, letting the named theme's own values
+  // show through again.
+  useEffect(() => {
+    const root = document.documentElement
+    if (customAccent) {
+      root.style.setProperty('--accent', customAccent)
+      root.style.setProperty('--accent-text', customAccent)
+      root.style.setProperty('--blue', customAccent)
+    } else {
+      root.style.removeProperty('--accent')
+      root.style.removeProperty('--accent-text')
+      root.style.removeProperty('--blue')
+    }
+  }, [customAccent, colorTheme, theme])
+
   const toggleTheme = useCallback(() => {
     setTheme(t => {
       const next = t === 'dark' ? 'light' : 'dark'
@@ -318,6 +340,17 @@ export default function App() {
   const updateColorTheme = useCallback((next) => {
     setColorTheme(next)
     localStorage.setItem('cipher-color-theme', next)
+    // Picking a preset means "use this preset's accent" — clear any custom
+    // override so the preset actually takes visible effect, rather than
+    // silently staying hidden behind a still-active custom color.
+    setCustomAccent(null)
+    localStorage.removeItem('cipher-custom-accent')
+  }, [])
+
+  const updateCustomAccent = useCallback((hex) => {
+    setCustomAccent(hex)
+    if (hex) localStorage.setItem('cipher-custom-accent', hex)
+    else localStorage.removeItem('cipher-custom-accent')
   }, [])
 
   const updateFontSize = useCallback((next) => {
@@ -456,6 +489,8 @@ export default function App() {
     toggleTheme={toggleTheme}
     colorTheme={colorTheme}
     updateColorTheme={updateColorTheme}
+    customAccent={customAccent}
+    updateCustomAccent={updateCustomAccent}
     fontSize={fontSize}
     updateFontSize={updateFontSize}
     signOut={signOut}

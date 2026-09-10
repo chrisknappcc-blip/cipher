@@ -1373,7 +1373,7 @@ function BotLogPanel({ entries = [], onClear }) {
   )
 }
 
-export default function Dashboard({ user, theme, toggleTheme, colorTheme, updateColorTheme, fontSize, updateFontSize, getToken, onScopeError, signOut }) {
+export default function Dashboard({ user, theme, toggleTheme, colorTheme, updateColorTheme, customAccent, updateCustomAccent, fontSize, updateFontSize, getToken, onScopeError, signOut }) {
 
   // ── User identity helpers (Netlify Identity + Clerk compatible) ──────────
   // Netlify Identity: user.email, user.user_metadata?.full_name
@@ -2265,6 +2265,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     { key: 'plum',   label: 'Plum',   swatch: '#9A5FD1' },
     { key: 'slate',  label: 'Slate',  swatch: '#4C8FB0' },
     { key: 'sunset', label: 'Sunset', swatch: '#E0793C' },
+    { key: 'pink',   label: 'Pink',   swatch: '#D63A7C' },
   ]
 
   const NavIcon = ({ name, color, active }) => {
@@ -2306,16 +2307,33 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
             {settingsOpen && (
               <div style={{ position:'absolute', top:40, right:0, width:220, background:'var(--bg-panel)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', boxShadow:'var(--shadow-soft)', padding:16, zIndex:200 }}>
                 <div style={{ fontSize:11, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.4px', marginBottom:10 }}>Color theme</div>
-                <div style={{ display:'flex', gap:8, marginBottom:18 }}>
+                <div style={{ display:'flex', gap:8, marginBottom:10, flexWrap:'wrap' }}>
                   {COLOR_THEMES.map(ct => (
                     <button key={ct.key} onClick={() => updateColorTheme(ct.key)} title={ct.label}
                       style={{
                         width:28, height:28, borderRadius:'50%', background:ct.swatch, cursor:'pointer',
-                        border: colorTheme === ct.key ? '2px solid var(--text)' : '2px solid transparent',
-                        outline: colorTheme === ct.key ? '2px solid ' + ct.swatch : 'none',
+                        border: (colorTheme === ct.key && !customAccent) ? '2px solid var(--text)' : '2px solid transparent',
+                        outline: (colorTheme === ct.key && !customAccent) ? '2px solid ' + ct.swatch : 'none',
                         outlineOffset:2,
                       }} />
                   ))}
+                </div>
+
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:18 }}>
+                  <label htmlFor="custom-accent-picker" style={{ fontSize:11, color:'var(--text-secondary)', cursor:'pointer' }}>
+                    Custom color:
+                  </label>
+                  <input id="custom-accent-picker" type="color"
+                    value={customAccent || '#D63A7C'}
+                    onChange={e => updateCustomAccent(e.target.value)}
+                    title="Pick any custom accent color"
+                    style={{ width:28, height:28, padding:0, border: customAccent ? '2px solid var(--text)' : '2px solid var(--border)', borderRadius:6, cursor:'pointer', background:'none' }} />
+                  {customAccent && (
+                    <button onClick={() => updateCustomAccent(null)}
+                      style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none', cursor:'pointer', textDecoration:'underline', padding:0 }}>
+                      Reset to preset
+                    </button>
+                  )}
                 </div>
 
                 <div style={{ fontSize:11, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.4px', marginBottom:10 }}>Font size</div>
