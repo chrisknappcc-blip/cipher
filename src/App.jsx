@@ -308,24 +308,61 @@ export default function App() {
     document.documentElement.dataset.fontSize = fontSize
   }, [fontSize])
 
+  // Blends two hex colors by a given ratio (0 = all colorA, 1 = all
+  // colorB) — standard linear RGB interpolation. Used to derive the
+  // muted text-secondary/text-tertiary levels from the one picked accent
+  // color, rather than applying that exact same color to every text
+  // level and losing all visual hierarchy between primary/secondary/
+  // tertiary text.
+  const hexToRgb = (hex) => {
+    const clean = hex.replace('#', '')
+    const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean
+    const num = parseInt(full, 16)
+    return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 }
+  }
+  const rgbToHex = (r, g, b) =>
+    '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
+  const mixHex = (hexA, hexB, ratio) => {
+    const a = hexToRgb(hexA), b = hexToRgb(hexB)
+    return rgbToHex(
+      a.r + (b.r - a.r) * ratio,
+      a.g + (b.g - a.g) * ratio,
+      a.b + (b.b - a.b) * ratio,
+    )
+  }
+
   // Custom accent color — deliberately a SEPARATE override layer on top of
   // whichever named preset is active, not a replacement for the preset
   // system. Inline styles on the root element take priority over the
   // attribute-selector CSS rules that set these same variables per named
-  // theme, so setting them here overrides the preset's accent colors
-  // without touching its backgrounds/borders/text at all. Clearing (null)
-  // removes the inline overrides, letting the named theme's own values
-  // show through again.
+  // theme, so setting them here overrides the preset's colors without
+  // touching its backgrounds at all. Clearing (null) removes the inline
+  // overrides, letting the named theme's own values show through again.
+  //
+  // Covers every text-related variable, not just the accent/highlight
+  // text — --text, --text-secondary, and --text-tertiary all get set too,
+  // each blended toward the CURRENT background by an increasing amount so
+  // the existing primary/secondary/muted text hierarchy is preserved
+  // rather than flattened into one identical color everywhere.
   useEffect(() => {
     const root = document.documentElement
     if (customAccent) {
+      const bg = getComputedStyle(root).getPropertyValue('--bg').trim() || (theme === 'dark' ? '#0A2A4A' : '#E7DFC8')
       root.style.setProperty('--accent', customAccent)
       root.style.setProperty('--accent-text', customAccent)
       root.style.setProperty('--blue', customAccent)
+      root.style.setProperty('--text', customAccent)
+      root.style.setProperty('--text-secondary', mixHex(customAccent, bg, 0.35))
+      root.style.setProperty('--text-tertiary', mixHex(customAccent, bg, 0.55))
+      root.style.setProperty('--border-strong', mixHex(customAccent, bg, 0.25))
     } else {
       root.style.removeProperty('--accent')
       root.style.removeProperty('--accent-text')
       root.style.removeProperty('--blue')
+      root.style.removeProperty('--text')
+      root.style.removeProperty('--text-secondary')
+      root.style.removeProperty('--text-tertiary')
+      root.style.removeProperty('--border-strong')
     }
   }, [customAccent, colorTheme, theme])
 
