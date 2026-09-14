@@ -160,7 +160,7 @@ async function appendBotEntries(newBots) {
 //   target_account__bdr_led_outreach=Chris+Knapp
 
 import { withAuth } from "./utils/auth.js";
-import { getTokens, setTokens, isTokenValid } from "./utils/tokenStore.js";
+import { getTokens, setTokens, isTokenValid, clearServiceTokens } from "./utils/tokenStore.js";
 import { getTabsForUser, getAllTabsForUser, getRegistry, saveRegistry, getPersonalTabs, savePersonalTabs, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
 import { getTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
 import { buildRightNowQueue, needsConfirmationTask, buildConfirmationTodo } from "./utils/rightNowQueue.js";
@@ -228,6 +228,7 @@ const HS_SCOPES = [
   "crm.objects.contacts.write",
   "crm.objects.deals.read",
   "crm.objects.companies.read",   // required for gold accounts panel
+  "crm.objects.owners.read",      // required for the Owners API (identity resolution for Right Now queue) — confirmed via a live 403 on a newly-connected account; was silently missing from the original scope trim, only "worked" for existing users because their tokens predate that change and retained the old, broader permission set
   "timeline",
   "sales-email-read",
   "crm.lists.read",
@@ -2435,6 +2436,44 @@ export const handler = async (event, context) => {
         hubspot:   !!tokens.hubspot?.access_token,
         microsoft: !!tokens.microsoft?.access_token,
       });
+    }
+
+    // POST /auth/disconnect — clears the calling user's own stored HubSpot
+    // token, forcing a fresh OAuth authorization next time they connect.
+    // Self-service only — always operates on the caller's own account,
+    // never anyone else's. Primarily needed for picking up a scope change
+    // on the app: an existing token doesn't automatically gain a newly
+    // added scope just because the app's registered list changed —  it
+    // keeps whatever was granted at the time it was originally issued,
+    // so reconnecting from scratch is the only way to get a token that
+    // reflects the current scope list.
+    if (method === "POST" && path === "/auth/disconnect") {
+      try {
+        await clearServiceTokens(user.userId, "hubspot");
+        return ok({ disconnected: true });
+      } catch (err) {
+        return error(500, `Disconnect error: ${err.message}`);
+      }
+    }
+
+    // POST /team/disconnect — admin-only: force-disconnect anyone's stored
+    // HubSpot token directly, rather than relying on them finding and
+    // clicking a self-service button themselves.
+    if (method === "POST" && path === "/team/disconnect") {
+      if (!isAdminUser(user)) return error(403, "Admin only");
+      try {
+        const body = JSON.parse(event.body || "{}");
+        let targetUserId = body.targetUserId || null;
+        if (!targetUserId && body.targetEmail) {
+          const profiles = await getActiveUserProfiles();
+          targetUserId = profiles.find(p => (p.email || "").toLowerCase() === body.targetEmail.toLowerCase())?.userId || null;
+        }
+        if (!targetUserId) return error(400, "targetUserId or a matching targetEmail is required");
+        await clearServiceTokens(targetUserId, "hubspot");
+        return ok({ disconnected: true, targetUserId });
+      } catch (err) {
+        return error(500, `Disconnect error: ${err.message}`);
+      }
     }
 
     // ── Owners (reps) list ───────────────────────────────────────────────────
