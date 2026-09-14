@@ -1086,6 +1086,83 @@ function ContactIntelPanel({ user, safeFetch }) {
 // corporate email security (Microsoft Defender's Safe Links, most
 // commonly) before the real person ever sees it. This creates the account
 // already confirmed, with a temp password you hand them directly.
+// ─── Force Disconnect HubSpot Panel ─────────────────────────────────────────
+// Admin-only. Needed specifically for picking up a scope change on the app —
+// an existing HubSpot token doesn't automatically gain a newly added scope
+// just because the app's registered scope list changed; it keeps whatever
+// was granted when it was originally issued. Forcing a disconnect clears
+// their stored token, so the next time they connect, they get a fresh one
+// reflecting the current scope list.
+function ForceDisconnectPanel({ safeFetch }) {
+  const [open, setOpen]       = useState(false)
+  const [email, setEmail]     = useState('')
+  const [loading, setLoading] = useState(false)
+  const [result, setResult]   = useState(null)
+  const [error, setError]     = useState(null)
+
+  const handleDisconnect = async () => {
+    const trimmed = email.trim().toLowerCase()
+    if (!trimmed || !trimmed.includes('@')) { setError('Enter a valid email address.'); return }
+    setLoading(true); setError(null); setResult(null)
+    try {
+      const res = await fetch('/.netlify/functions/hubspot/team/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await window.netlifyIdentity.currentUser().jwt()}` },
+        body: JSON.stringify({ targetEmail: trimmed }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+      setResult(trimmed)
+      setEmail('')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div style={{ marginBottom:'1.25rem' }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none',
+          cursor:'pointer', padding:'2px 0', display:'flex', alignItems:'center', gap:5 }}>
+        <span style={{ fontSize:10 }}>{open ? '▼' : '▶'}</span>
+        Force Disconnect HubSpot
+      </button>
+      {open && (
+        <div style={{ marginTop:8, padding:'14px 16px', background:'var(--bg-panel)',
+          border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', maxWidth:460 }}>
+          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10, lineHeight:1.5 }}>
+            Clears someone's stored HubSpot connection, forcing a fresh reconnect next time they load Cipher.
+            Needed after a scope change — their existing token won't automatically pick up a newly added
+            permission on its own.
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <input value={email} onChange={e => setEmail(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleDisconnect()}
+              placeholder="person@carecontinuity.com"
+              style={{ flex:1, padding:'8px 10px', border:'1px solid var(--border)', borderRadius:'var(--radius)',
+                background:'var(--bg)', color:'var(--text)', fontSize:13 }} />
+            <button onClick={handleDisconnect} disabled={loading || !email.trim()}
+              style={{ padding:'8px 16px', background: loading || !email.trim() ? 'var(--bg-secondary)' : 'var(--red)',
+                color: loading || !email.trim() ? 'var(--text-tertiary)' : '#fff',
+                border:'none', borderRadius:'var(--radius)', fontSize:13, fontWeight:500,
+                cursor: loading || !email.trim() ? 'not-allowed' : 'pointer', whiteSpace:'nowrap' }}>
+              {loading ? 'Disconnecting…' : 'Force Disconnect'}
+            </button>
+          </div>
+          {error && <div style={{ marginTop:10, fontSize:12, color:'var(--red)' }}>{error}</div>}
+          {result && (
+            <div style={{ marginTop:10, fontSize:12, color:'var(--green, #16a34a)' }}>
+              ✓ Disconnected {result} — they'll be prompted to reconnect HubSpot next time they load Cipher.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AddTeamMemberPanel({ safeFetch }) {
   const [open, setOpen]       = useState(false)
   const [email, setEmail]     = useState('')
@@ -2440,6 +2517,11 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
             {/* ── Add Team Member ── */}
             {currentUserName === 'Chris Knapp' && (
               <AddTeamMemberPanel safeFetch={safeFetch} />
+            )}
+
+            {/* ── Force Disconnect HubSpot ── */}
+            {currentUserName === 'Chris Knapp' && (
+              <ForceDisconnectPanel safeFetch={safeFetch} />
             )}
 
             {/* ── Bot Opens Log ── */}
