@@ -7119,6 +7119,36 @@ export const handler = async (event, context) => {
           const targetEmail = (profiles.find(p => p.userId === targetUserId)?.email || "").toLowerCase();
           if (!visibility.emails.has(targetEmail)) return error(403, "That person isn't on your team");
         }
+
+        // Temporary diagnostic — ?debug=1 exposes exactly where identity
+        // resolution fails for this userId: the stored-profile email
+        // lookup, the target user's own HubSpot owners API call (which
+        // depends on THEIR OWN stored HubSpot connection being valid, not
+        // the viewer's), or simply no owner record matching that email.
+        if (qp.debug === "1") {
+          const profiles = await getActiveUserProfiles();
+          const resolvedEmail = profiles.find(p => p.userId === targetUserId)?.email || null;
+          let ownersApiError = null;
+          let ownersApiCount = null;
+          let matchedOwner = null;
+          if (resolvedEmail) {
+            try {
+              const ownersData = await hsGet(targetUserId, "/crm/v3/owners", { limit: 100 });
+              ownersApiCount = (ownersData.results || []).length;
+              matchedOwner = (ownersData.results || []).find(o => (o.email || "").toLowerCase() === resolvedEmail.toLowerCase()) || null;
+            } catch (err) {
+              ownersApiError = err.message;
+            }
+          }
+          return ok({
+            targetUserId,
+            resolvedEmailFromProfile: resolvedEmail,
+            ownersApiError,
+            ownersApiTotalReturned: ownersApiCount,
+            matchedOwner,
+          });
+        }
+
         const queue = await computeRightNowQueue(targetUserId, {});
         return ok({ queue });
       } catch (err) {
