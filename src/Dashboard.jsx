@@ -1093,6 +1093,88 @@ function ContactIntelPanel({ user, safeFetch }) {
 // was granted when it was originally issued. Forcing a disconnect clears
 // their stored token, so the next time they connect, they get a fresh one
 // reflecting the current scope list.
+// ─── Backfill Primary Outreach Rep Panel ────────────────────────────────────
+// Admin-only. Runs the paginated backfill endpoint repeatedly until every
+// contact with assigned_bdr set has been processed — each page handles 100
+// contacts, so at real scale (tens of thousands) this can take a while,
+// hence the running progress display rather than a single fire-and-forget
+// button with no feedback.
+function BackfillPrimaryRepPanel({ safeFetch }) {
+  const [open, setOpen]         = useState(false)
+  const [running, setRunning]   = useState(false)
+  const [totalProcessed, setTotalProcessed] = useState(0)
+  const [totalUpdated, setTotalUpdated]     = useState(0)
+  const [error, setError]       = useState(null)
+  const [done, setDone]         = useState(false)
+
+  const runBackfill = async () => {
+    setRunning(true); setError(null); setDone(false)
+    setTotalProcessed(0); setTotalUpdated(0)
+    let after = null
+    let keepGoing = true
+    try {
+      while (keepGoing) {
+        const jwt = await window.netlifyIdentity.currentUser().jwt()
+        const res = await fetch('/.netlify/functions/hubspot/admin/backfill-primary-outreach-rep', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+          body: JSON.stringify({ after }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+        setTotalProcessed(p => p + data.processed)
+        setTotalUpdated(u => u + data.updated)
+        keepGoing = data.hasMore
+        after = data.after
+      }
+      setDone(true)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div style={{ marginBottom:'1.25rem' }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none',
+          cursor:'pointer', padding:'2px 0', display:'flex', alignItems:'center', gap:5 }}>
+        <span style={{ fontSize:10 }}>{open ? '▼' : '▶'}</span>
+        Backfill Primary Outreach Rep
+      </button>
+      {open && (
+        <div style={{ marginTop:8, padding:'14px 16px', background:'var(--bg-panel)',
+          border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', maxWidth:460 }}>
+          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10, lineHeight:1.5 }}>
+            For every contact with Assigned BDR set, finds their most recent qualifying activity
+            (email or meeting) and sets Primary Outreach Rep to whoever sent it — falling back to
+            Assigned BDR if no such activity exists yet. Runs across the whole portal in pages of
+            100; can take a few minutes at real scale.
+          </div>
+          <button onClick={runBackfill} disabled={running}
+            style={{ padding:'8px 16px', background: running ? 'var(--bg-secondary)' : 'var(--accent)',
+              color: running ? 'var(--text-tertiary)' : '#fff', border:'none', borderRadius:'var(--radius)',
+              fontSize:13, fontWeight:500, cursor: running ? 'not-allowed' : 'pointer' }}>
+            {running ? 'Running…' : 'Run Backfill'}
+          </button>
+          {(running || totalProcessed > 0) && (
+            <div style={{ marginTop:10, fontSize:12, color:'var(--text-secondary)' }}>
+              Processed {totalProcessed} · Updated {totalUpdated}
+            </div>
+          )}
+          {error && <div style={{ marginTop:10, fontSize:12, color:'var(--red)' }}>{error}</div>}
+          {done && !error && (
+            <div style={{ marginTop:10, fontSize:12, color:'var(--green, #16a34a)' }}>
+              ✓ Done — {totalUpdated} of {totalProcessed} contacts updated.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ForceDisconnectPanel({ safeFetch }) {
   const [open, setOpen]       = useState(false)
   const [email, setEmail]     = useState('')
@@ -2522,6 +2604,11 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
             {/* ── Force Disconnect HubSpot ── */}
             {currentUserName === 'Chris Knapp' && (
               <ForceDisconnectPanel safeFetch={safeFetch} />
+            )}
+
+            {/* ── Backfill Primary Outreach Rep ── */}
+            {currentUserName === 'Chris Knapp' && (
+              <BackfillPrimaryRepPanel safeFetch={safeFetch} />
             )}
 
             {/* ── Bot Opens Log ── */}
