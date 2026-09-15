@@ -6547,6 +6547,109 @@ export const handler = async (event, context) => {
     //      files) — the expected volume here is periodic review
     //      snapshots, not high-frequency writes, so reading/writing the
     //      whole array each time is simple and more than fast enough.
+    // POST /admin/backfill-primary-outreach-rep — admin-only, paginated.
+    // For each contact with assigned_bdr set, finds the most recent
+    // qualifying activity (email OR meeting, whichever is later) and sets
+    // primary_outreach_rep to that activity's creator. Falls back to the
+    // contact's own assigned_bdr when no qualifying activity exists at
+    // all yet — matching the confirmed rule: default to the BDR until
+    // someone (BDR or VP) actually sends something, then always reflect
+    // whoever sent the MOST RECENT one, recalculated fresh each run —
+    // not a permanent handoff once a VP gets involved.
+    //
+    // Paginated with an `after` cursor (same pattern as other bulk admin
+    // tools in this file) — call repeatedly, passing back the returned
+    // `after` value, until `hasMore` is false. One page processes 100
+    // contacts, each requiring its own association + engagement lookups,
+    // so this deliberately doesn't try to process the whole portal in one
+    // request.
+    if (method === "POST" && path === "/admin/backfill-primary-outreach-rep") {
+      if (!isAdminUser(user)) return error(403, "Admin only");
+      try {
+        const body = JSON.parse(event.body || "{}");
+        const after = body.after || undefined;
+
+        const searchBody = {
+          filterGroups: [{ filters: [{ propertyName: "assigned_bdr", operator: "HAS_PROPERTY" }] }],
+          properties: ["assigned_bdr", "primary_outreach_rep"],
+          limit: 100,
+        };
+        if (after) searchBody.after = after;
+        const page = await hsPost(user.userId, "/crm/v3/objects/contacts/search", searchBody);
+        const contacts = page.results || [];
+        const nextAfter = page.paging?.next?.after || null;
+
+        if (contacts.length === 0) {
+          return ok({ processed: 0, updated: 0, hasMore: false, after: null });
+        }
+
+        const contactIds = contacts.map(c => c.id);
+        const [emailAssoc, meetingAssoc] = await Promise.all([
+          batchFetchAssociations(user.userId, "contacts", "emails", contactIds),
+          batchFetchAssociations(user.userId, "contacts", "meetings", contactIds),
+        ]);
+
+        const emailIds = [...new Set(Object.values(emailAssoc).flat())];
+        const meetingIds = [...new Set(Object.values(meetingAssoc).flat())];
+
+        const engagementDetails = {}; // id -> { timestamp, creatorId }
+        for (const [ids, objectType] of [[emailIds, "emails"], [meetingIds, "meetings"]]) {
+          for (let i = 0; i < ids.length; i += 100) {
+            const chunk = ids.slice(i, i + 100);
+            if (chunk.length === 0) continue;
+            const data = await hsPost(user.userId, `/crm/v3/objects/${objectType}/batch/read`, {
+              inputs: chunk.map(id => ({ id })),
+              properties: ["hs_timestamp", "hubspot_owner_id", "hs_created_by_user_id"],
+            }).catch(() => ({ results: [] }));
+            (data.results || []).forEach(e => {
+              engagementDetails[e.id] = {
+                timestamp: e.properties?.hs_timestamp || null,
+                creatorId: e.properties?.hubspot_owner_id || e.properties?.hs_created_by_user_id || null,
+              };
+            });
+          }
+        }
+
+        // Owner ID -> name, for translating whichever creator ID wins
+        // into the actual text value primary_outreach_rep expects.
+        const ownersData = await hsGet(user.userId, "/crm/v3/owners", { limit: 100 }).catch(() => ({ results: [] }));
+        const ownerNameById = {};
+        (ownersData.results || []).forEach(o => {
+          ownerNameById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
+        });
+
+        const updates = [];
+        contacts.forEach(c => {
+          const engagementIds = [...(emailAssoc[c.id] || []), ...(meetingAssoc[c.id] || [])];
+          let mostRecent = null;
+          engagementIds.forEach(id => {
+            const detail = engagementDetails[id];
+            if (!detail?.timestamp) return;
+            if (!mostRecent || new Date(detail.timestamp) > new Date(mostRecent.timestamp)) mostRecent = detail;
+          });
+
+          const resolvedName = mostRecent?.creatorId ? ownerNameById[String(mostRecent.creatorId)] : null;
+          const newValue = resolvedName || c.properties?.assigned_bdr || null;
+          if (newValue && newValue !== c.properties?.primary_outreach_rep) {
+            updates.push({ id: c.id, properties: { primary_outreach_rep: newValue } });
+          }
+        });
+
+        if (updates.length > 0) {
+          await hsPost(user.userId, "/crm/v3/objects/contacts/batch/update", { inputs: updates });
+        }
+
+        return ok({
+          processed: contacts.length,
+          updated: updates.length,
+          hasMore: !!nextAfter,
+          after: nextAfter,
+        });
+      } catch (err) {
+        return error(500, `Backfill error: ${err.message}`);
+      }
+    }
+
     if (path === "/pipeline-snapshots") {
       try {
         if (method === "GET") {
