@@ -551,6 +551,33 @@ async function hsPost(userId, path, body) {
 // Builds HubSpot search filter groups from query params.
 // Filters stack (AND logic) -- each active filter adds to the group.
 
+// territory lives on the COMPANY object, not contacts — confirmed directly
+// via a live 400 error ("Invalid property name: territory") when it was
+// being applied straight to a contact search filter. This resolves a
+// territory value into the set of contact IDs associated with companies
+// in that territory, so callers can add an "hs_object_id IN [...]" filter
+// instead of a direct (and always-failing) property filter.
+async function resolveTerritoryToContactIds(userId, territory) {
+  let companyIds = [];
+  let after = undefined;
+  do {
+    const searchBody = {
+      filterGroups: [{ filters: [{ propertyName: "territory", operator: "EQ", value: territory }] }],
+      properties: ["name"],
+      limit: 100,
+    };
+    if (after) searchBody.after = after;
+    const companyData = await hsPost(userId, "/crm/v3/objects/companies/search", searchBody).catch(() => ({ results: [] }));
+    companyIds.push(...(companyData.results || []).map(c => c.id));
+    after = companyData.paging?.next?.after || undefined;
+  } while (after);
+
+  if (companyIds.length === 0) return [];
+
+  const assoc = await batchFetchAssociations(userId, "companies", "contacts", companyIds);
+  return [...new Set(Object.values(assoc).flat())];
+}
+
 function buildCustomFilters(qp, baseFilters = []) {
   // assigned_bdr: comma-separated BDR names (contacts filtered by assigned_bdr property)
   // owner_id: comma-separated HubSpot owner IDs (contacts filtered by hubspot_owner_id)
@@ -580,7 +607,6 @@ function buildCustomFilters(qp, baseFilters = []) {
 
   // Other contact filters
   const OTHER_FILTERS = {
-    territory:                       "territory",
     target_account__bdr_led_outreach:"target_account__bdr_led_outreach",
   };
   Object.entries(OTHER_FILTERS).forEach(([param, prop]) => {
@@ -1197,7 +1223,20 @@ async function computeTaskQueue(user, qp) {
     const windowEnd   = new Date(now + days * 24 * 60 * 60 * 1000).toISOString();
     const overdueFrom = new Date(now - 30  * 24 * 60 * 60 * 1000).toISOString(); // was 90 — stale auto-generated tasks don't need that long a tail
 
-    const customFilters = buildCustomFilters(qp); // picks up assigned_bdr, territory etc.
+    const customFilters = buildCustomFilters(qp); // picks up assigned_bdr etc.
+    // territory lives on companies, not contacts — resolve it separately
+    // rather than pass it straight into a contact-property filter, which
+    // fails the whole query outright since that property doesn't exist there.
+    if (qp.territory) {
+      const territoryContactIds = await resolveTerritoryToContactIds(user.userId, qp.territory);
+      if (territoryContactIds.length > 0) {
+        customFilters.push({ propertyName: "hs_object_id", operator: "IN", values: territoryContactIds });
+      } else {
+        // No companies matched this territory at all — force zero results
+        // rather than silently ignore the filter and return everyone.
+        customFilters.push({ propertyName: "hs_object_id", operator: "EQ", value: "0" });
+      }
+    }
 
     // ── Section 1: Replies awaiting response ───────────────────────────────
     // Logic: find contacts where a reply exists in the window AND no outbound
@@ -3581,6 +3620,17 @@ export const handler = async (event, context) => {
       // We run one search per date property and merge results.
       const customFilters = buildCustomFilters(qp);
       const filterGroups  = buildFilterGroups(qp);
+      // territory lives on companies, not contacts — resolve it to actual
+      // contact IDs and inject into every group, since buildFilterGroups
+      // can return either one group (single filter type) or two (OR logic
+      // between assigned_bdr and owner_id).
+      if (qp.territory) {
+        const territoryContactIds = await resolveTerritoryToContactIds(user.userId, qp.territory);
+        const territoryFilter = territoryContactIds.length > 0
+          ? { propertyName: "hs_object_id", operator: "IN", values: territoryContactIds }
+          : { propertyName: "hs_object_id", operator: "EQ", value: "0" }; // no match — force zero results, don't silently ignore the filter
+        filterGroups.forEach(g => g.filters.push(territoryFilter));
+      }
 
       const activityDateProps = [
         "hs_email_last_send_date",         // marketing + sequence sends
