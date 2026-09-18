@@ -6668,6 +6668,19 @@ export const handler = async (event, context) => {
           ownerNameById[String(o.id)] = `${o.firstName || ""} ${o.lastName || ""}`.trim();
         });
 
+        // Only the sales team members who are actually valid options on the
+        // primary_outreach_rep property itself — confirmed via a real 400
+        // error where a batch failed entirely because a resolved creator
+        // (e.g. "Lindsay Murdock") turned out to be someone outside the
+        // team, whose activity on a record shouldn't override BDR/VP
+        // attribution at all. HubSpot rejects the WHOLE batch if even one
+        // record has an invalid value, so this has to be checked before
+        // adding anything to the update list, not caught after the fact.
+        const VALID_OUTREACH_REPS = new Set([
+          "Abigail Evans", "Harley Reed", "Chris Knapp", "Tim Grisham",
+          "Joe Haine", "John Hansel", "Matt Valin", "Chiara Pate",
+        ]);
+
         const updates = [];
         contacts.forEach(c => {
           const engagementIds = [...(emailAssoc[c.id] || []), ...(meetingAssoc[c.id] || [])];
@@ -6678,9 +6691,10 @@ export const handler = async (event, context) => {
             if (!mostRecent || new Date(detail.timestamp) > new Date(mostRecent.timestamp)) mostRecent = detail;
           });
 
-          const resolvedName = mostRecent?.creatorId ? ownerNameById[String(mostRecent.creatorId)] : null;
+          const candidateName = mostRecent?.creatorId ? ownerNameById[String(mostRecent.creatorId)] : null;
+          const resolvedName = candidateName && VALID_OUTREACH_REPS.has(candidateName) ? candidateName : null;
           const newValue = resolvedName || c.properties?.assigned_bdr || null;
-          if (newValue && newValue !== c.properties?.primary_outreach_rep) {
+          if (newValue && VALID_OUTREACH_REPS.has(newValue) && newValue !== c.properties?.primary_outreach_rep) {
             updates.push({ id: c.id, properties: { primary_outreach_rep: newValue } });
           }
         });
