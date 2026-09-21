@@ -1104,12 +1104,13 @@ function BackfillPrimaryRepPanel({ safeFetch }) {
   const [running, setRunning]   = useState(false)
   const [totalProcessed, setTotalProcessed] = useState(0)
   const [totalUpdated, setTotalUpdated]     = useState(0)
+  const [failedRecords, setFailedRecords]   = useState([])
   const [error, setError]       = useState(null)
   const [done, setDone]         = useState(false)
 
   const runBackfill = async () => {
     setRunning(true); setError(null); setDone(false)
-    setTotalProcessed(0); setTotalUpdated(0)
+    setTotalProcessed(0); setTotalUpdated(0); setFailedRecords([])
     let after = null
     let keepGoing = true
     try {
@@ -1124,6 +1125,7 @@ function BackfillPrimaryRepPanel({ safeFetch }) {
         if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
         setTotalProcessed(p => p + data.processed)
         setTotalUpdated(u => u + data.updated)
+        if (data.failed?.length > 0) setFailedRecords(f => [...f, ...data.failed])
         keepGoing = data.hasMore
         after = data.after
       }
@@ -1150,7 +1152,9 @@ function BackfillPrimaryRepPanel({ safeFetch }) {
             For every contact with Assigned BDR set, finds their most recent qualifying activity
             (email or meeting) and sets Primary Outreach Rep to whoever sent it — falling back to
             Assigned BDR if no such activity exists yet. Runs across the whole portal in pages of
-            100; can take a few minutes at real scale.
+            100; can take a few minutes at real scale. Individual records that can't be updated
+            (e.g. a deleted/merged contact) are skipped and reported below, rather than blocking
+            the rest of the run.
           </div>
           <button onClick={runBackfill} disabled={running}
             style={{ padding:'8px 16px', background: running ? 'var(--bg-secondary)' : 'var(--accent)',
@@ -1160,13 +1164,22 @@ function BackfillPrimaryRepPanel({ safeFetch }) {
           </button>
           {(running || totalProcessed > 0) && (
             <div style={{ marginTop:10, fontSize:12, color:'var(--text-secondary)' }}>
-              Processed {totalProcessed} · Updated {totalUpdated}
+              Processed {totalProcessed} · Updated {totalUpdated}{failedRecords.length > 0 ? ` · Skipped ${failedRecords.length}` : ''}
             </div>
           )}
           {error && <div style={{ marginTop:10, fontSize:12, color:'var(--red)' }}>{error}</div>}
           {done && !error && (
             <div style={{ marginTop:10, fontSize:12, color:'var(--green, #16a34a)' }}>
-              ✓ Done — {totalUpdated} of {totalProcessed} contacts updated.
+              ✓ Done — {totalUpdated} of {totalProcessed} contacts updated{failedRecords.length > 0 ? `, ${failedRecords.length} skipped` : ''}.
+            </div>
+          )}
+          {failedRecords.length > 0 && (
+            <div style={{ marginTop:10, maxHeight:160, overflowY:'auto', fontSize:11, color:'var(--text-tertiary)' }}>
+              {failedRecords.map((f, i) => (
+                <div key={i} style={{ marginBottom:4, paddingBottom:4, borderBottom:'1px solid var(--border)' }}>
+                  Contact {f.id} → "{f.value}": {f.error}
+                </div>
+              ))}
             </div>
           )}
         </div>
