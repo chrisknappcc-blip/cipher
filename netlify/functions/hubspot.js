@@ -6699,13 +6699,39 @@ export const handler = async (event, context) => {
           }
         });
 
-        if (updates.length > 0) {
-          await hsPost(user.userId, "/crm/v3/objects/contacts/batch/update", { inputs: updates });
+        // Batch update, with a resilience fallback: HubSpot's batch API
+        // fails the WHOLE batch if even one record in it has a problem —
+        // confirmed directly by an earlier run that hit an invalid enum
+        // value and lost all 100 updates in that page, and a later run
+        // that hit a vague, unspecific 400 partway through 10,000 records
+        // with no indication of which record caused it. Rather than keep
+        // guessing at what HubSpot's generic message means, this now
+        // isolates the actual problem: on any batch failure, retry in
+        // progressively smaller chunks (25, then 5, then one at a time)
+        // until the specific bad record(s) surface on their own, applying
+        // every valid update along the way instead of losing the whole
+        // page to one record.
+        const failedRecords = [];
+        async function applyUpdatesResilient(items) {
+          if (items.length === 0) return;
+          try {
+            await hsPost(user.userId, "/crm/v3/objects/contacts/batch/update", { inputs: items });
+          } catch (err) {
+            if (items.length === 1) {
+              failedRecords.push({ id: items[0].id, value: items[0].properties.primary_outreach_rep, error: err.message });
+              return;
+            }
+            const mid = Math.ceil(items.length / 2);
+            await applyUpdatesResilient(items.slice(0, mid));
+            await applyUpdatesResilient(items.slice(mid));
+          }
         }
+        await applyUpdatesResilient(updates);
 
         return ok({
           processed: contacts.length,
-          updated: updates.length,
+          updated: updates.length - failedRecords.length,
+          failed: failedRecords,
           hasMore: !!nextAfter,
           after: nextAfter,
         });
