@@ -1102,38 +1102,51 @@ function ContactIntelPanel({ user, safeFetch }) {
 function BackfillPrimaryRepPanel({ safeFetch }) {
   const [open, setOpen]         = useState(false)
   const [running, setRunning]   = useState(false)
+  const [currentRep, setCurrentRep] = useState(null)
   const [totalProcessed, setTotalProcessed] = useState(0)
   const [totalUpdated, setTotalUpdated]     = useState(0)
   const [failedRecords, setFailedRecords]   = useState([])
   const [error, setError]       = useState(null)
   const [done, setDone]         = useState(false)
 
+  // One rep per search — HubSpot's Search API hard-caps total pagination
+  // at 10,000 results regardless of page size, confirmed directly by a
+  // real run failing right at "Processed 10000." Each rep's own contact
+  // count stays safely under that (roughly 8,500 each, per Chris), so
+  // running the backfill once per person sidesteps the cap entirely
+  // rather than needing a workaround for it.
+  const ALL_REPS = ['Chris Knapp', 'Chiara Pate', 'Abigail Evans', 'Harley Reed', 'Matt Valin', 'Joe Haine', 'Tim Grisham', 'John Hansel']
+
   const runBackfill = async () => {
     setRunning(true); setError(null); setDone(false)
     setTotalProcessed(0); setTotalUpdated(0); setFailedRecords([])
-    let after = null
-    let keepGoing = true
     try {
-      while (keepGoing) {
-        const jwt = await window.netlifyIdentity.currentUser().jwt()
-        const res = await fetch('/.netlify/functions/hubspot/admin/backfill-primary-outreach-rep', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
-          body: JSON.stringify({ after }),
-        })
-        const data = await res.json()
-        if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
-        setTotalProcessed(p => p + data.processed)
-        setTotalUpdated(u => u + data.updated)
-        if (data.failed?.length > 0) setFailedRecords(f => [...f, ...data.failed])
-        keepGoing = data.hasMore
-        after = data.after
+      for (const rep of ALL_REPS) {
+        setCurrentRep(rep)
+        let after = null
+        let keepGoing = true
+        while (keepGoing) {
+          const jwt = await window.netlifyIdentity.currentUser().jwt()
+          const res = await fetch('/.netlify/functions/hubspot/admin/backfill-primary-outreach-rep', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+            body: JSON.stringify({ after, assignedBdr: rep }),
+          })
+          const data = await res.json()
+          if (!res.ok) throw new Error(`${rep}: ${data.error || `Request failed (${res.status})`}`)
+          setTotalProcessed(p => p + data.processed)
+          setTotalUpdated(u => u + data.updated)
+          if (data.failed?.length > 0) setFailedRecords(f => [...f, ...data.failed])
+          keepGoing = data.hasMore
+          after = data.after
+        }
       }
       setDone(true)
     } catch (e) {
       setError(e.message)
     } finally {
       setRunning(false)
+      setCurrentRep(null)
     }
   }
 
@@ -1164,6 +1177,7 @@ function BackfillPrimaryRepPanel({ safeFetch }) {
           </button>
           {(running || totalProcessed > 0) && (
             <div style={{ marginTop:10, fontSize:12, color:'var(--text-secondary)' }}>
+              {running && currentRep && <div style={{ marginBottom:4, fontWeight:500 }}>Currently: {currentRep}</div>}
               Processed {totalProcessed} · Updated {totalUpdated}{failedRecords.length > 0 ? ` · Skipped ${failedRecords.length}` : ''}
             </div>
           )}
