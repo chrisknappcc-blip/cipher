@@ -6613,14 +6613,24 @@ export const handler = async (event, context) => {
     // contacts, each requiring its own association + engagement lookups,
     // so this deliberately doesn't try to process the whole portal in one
     // request.
+    //
+    // Requires assignedBdr — one specific rep's name per call, not a
+    // broad "has this property" search across everyone. HubSpot's Search
+    // API hard-caps total pagination at 10,000 results, confirmed
+    // directly by a real run failing right at "Processed 10000." Each
+    // individual rep's contact count stays safely under that limit, so
+    // splitting the search this way sidesteps the cap entirely rather
+    // than needing a workaround for it.
     if (method === "POST" && path === "/admin/backfill-primary-outreach-rep") {
       if (!isAdminUser(user)) return error(403, "Admin only");
       try {
         const body = JSON.parse(event.body || "{}");
         const after = body.after || undefined;
+        const assignedBdr = body.assignedBdr;
+        if (!assignedBdr) return error(400, "assignedBdr is required — one rep's name per call, to stay under HubSpot's 10,000-result search pagination cap.");
 
         const searchBody = {
-          filterGroups: [{ filters: [{ propertyName: "assigned_bdr", operator: "HAS_PROPERTY" }] }],
+          filterGroups: [{ filters: [{ propertyName: "assigned_bdr", operator: "EQ", value: assignedBdr }] }],
           properties: ["assigned_bdr", "primary_outreach_rep"],
           limit: 100,
         };
