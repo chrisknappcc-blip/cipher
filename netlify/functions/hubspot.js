@@ -2698,6 +2698,7 @@ export const handler = async (event, context) => {
 
         // Actual enum values from HubSpot -- dashes between GOLD and range
         const GOLD_TIERS = [
+          "Highest Priority",
           "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
           "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
         ];
@@ -2852,6 +2853,7 @@ export const handler = async (event, context) => {
         // Extract leading number from tier for numeric sort
         // "GOLD - 1-10" -> 1, "GOLD - 11-20" -> 11
         const tierRank = (tier) => {
+          if ((tier || "").trim() === "Highest Priority") return 0; // ranks above GOLD - 1-10, not below everything via the digit-extraction fallback
           const match = (tier || "").match(/(\d+)/);
           return match ? parseInt(match[1], 10) : 999;
         };
@@ -4433,6 +4435,7 @@ export const handler = async (event, context) => {
         const sinceISO = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
         const PORTAL   = "39921549";
         const GOLD_TIERS = [
+          "Highest Priority",
           "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
           "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
         ];
@@ -6004,6 +6007,7 @@ export const handler = async (event, context) => {
         // Activity specifically on Gold tier contacts, sliced by rep and by account
         if (section === "gold_activity") {
           const GOLD_TIERS = [
+            "Highest Priority",
             "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
             "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
           ];
@@ -6255,6 +6259,7 @@ export const handler = async (event, context) => {
         // - Missing data gaps still remaining per account
         if (section === "gold_work_log") {
           const GOLD_TIERS = [
+            "Highest Priority",
             "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
             "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
           ];
@@ -6463,6 +6468,7 @@ export const handler = async (event, context) => {
         ];
 
         const GOLD_TIERS = [
+          "Highest Priority",
           "GOLD - 1-10","GOLD - 11-20","GOLD - 21-30","GOLD - 31-40","GOLD - 41-50",
           "GOLD - 51-60","GOLD - 61-70","GOLD - 71-80","GOLD - 81-90","GOLD - 91-100",
         ];
