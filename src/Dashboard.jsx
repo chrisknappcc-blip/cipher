@@ -358,6 +358,7 @@ const TERRITORY_OPTIONS = [
 
 const TIER_OPTIONS = [
   { value:'', label:'All tiers' },
+  { value:'Highest Priority', label:'Highest Priority' },
   { value:'GOLD - 1-10',   label:'GOLD 1-10' },
   { value:'GOLD - 11-20',  label:'GOLD 11-20' },
   { value:'GOLD - 21-30',  label:'GOLD 21-30' },
@@ -5258,6 +5259,7 @@ const TARGET_PERSONAS = [
 
 const GOLD_TIER_OPTIONS = [
   { value:'',               label:'All Tiers' },
+  { value:'Highest Priority', label:'Highest Priority' },
   { value:'GOLD - 1-10',   label:'GOLD 1-10' },
   { value:'GOLD - 11-20',  label:'GOLD 11-20' },
   { value:'GOLD - 21-30',  label:'GOLD 21-30' },
