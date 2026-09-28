@@ -7157,12 +7157,17 @@ export const handler = async (event, context) => {
         });
 
         // ── Optional rep filter (applied last, after merge/correlation) ──
+        // Organizer only — this used to ALSO match on any attendee's
+        // assigned_bdr/primary_outreach_rep, which meant a meeting Joe (or
+        // Tim, or Matt) actually scheduled would still show up under
+        // whoever owns that contact's territory, since ownership and who
+        // scheduled a specific meeting are two different things entirely.
+        // Confirmed directly: meetings scheduled by other people were
+        // showing up under Chris and Chiara's views for exactly this
+        // reason.
         let result = merged;
         if (repFilter) {
-          result = result.filter(m =>
-            m.organizerName === repFilter ||
-            (m.attendees || []).some(a => a.assignedBdr === repFilter || a.primaryOutreachRep === repFilter)
-          );
+          result = result.filter(m => m.organizerName === repFilter);
         }
 
         result.sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0));
