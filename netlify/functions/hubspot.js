@@ -4448,6 +4448,8 @@ export const handler = async (event, context) => {
           "cknapp@carecontinuity.com":  { name: "Chris Knapp",  ownerId: "78304576" },
           "chrisknappcc@gmail.com":      { name: "Chris Knapp",  ownerId: "78304576" },
           "cpate@carecontinuity.com":    { name: "Chiara Pate",  ownerId: "87806380" },
+          "aevans@carecontinuity.com":   { name: "Abigail Evans", ownerId: "98527334" },
+          "hreed@carecontinuity.com":    { name: "Harley Reed",  ownerId: "98527301" },
           "mvalin@carecontinuity.com":   { name: "Matt Valin",   ownerId: "76104455" },
           "jhansel@carecontinuity.com":  { name: "John Hansel",  ownerId: "743772047" },
         };
@@ -4997,13 +4999,23 @@ export const handler = async (event, context) => {
         const sinceISO = sinceMs ? new Date(sinceMs).toISOString() : null;
         const untilISO = untilMs ? new Date(untilMs).toISOString() : null;
 
-        const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate", "Matt Valin", "Joseph Haine", "Tim Grisham", "Irene Wong", "Cole Hooper", "John Hansel"];
+        const KNOWN_BDRS = ["Chris Knapp", "Chiara Pate", "Abigail Evans", "Harley Reed", "Matt Valin", "Joseph Haine", "Tim Grisham", "Irene Wong", "Cole Hooper", "John Hansel"];
+
+        // The BDRs. Contact level metrics for these reps must filter by
+        // assigned_bdr (territory), NOT hubspot_owner_id: contact owners are
+        // usually the VP for the territory, so owner based counts badly
+        // undercount BDR activity. Confirmed against live data: Abby had 1,240
+        // contacts with recent sales email opens by assigned_bdr but only 8 by
+        // owner; Chris had 1,094 vs 174.
+        const BDR_REPS = new Set(["Chris Knapp", "Chiara Pate", "Abigail Evans", "Harley Reed"]);
 
         // Owner ID map — ALL reps including BDRs
         // Email engagement objects use hubspot_owner_id not assigned_bdr
         const REP_OWNER_ID_MAP = {
           "Chris Knapp":  "78304576",
           "Chiara Pate":  "87806380",
+          "Abigail Evans": "98527334",
+          "Harley Reed":  "98527301",
           "Matt Valin":   "76104455",
           "Joseph Haine": "55217954",
           "Tim Grisham":  "83862037",
@@ -5015,7 +5027,7 @@ export const handler = async (event, context) => {
         // Build filter for a single rep -- uses hubspot_owner_id for AEs, assigned_bdr for BDRs
         const repFilter1 = (repName, dateProp, sinceVal) => {
           const ownerId = REP_OWNER_ID_MAP[repName];
-          const repF = ownerId
+          const repF = ownerId && !BDR_REPS.has(repName)
             ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
             : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
           const dateF = sinceVal
@@ -5111,7 +5123,7 @@ export const handler = async (event, context) => {
         // Batch query: get accurate counts for ALL reps for a single metric.
         // Runs one count query per rep in parallel (uses limit:1 + total for accuracy).
         // Returns map of repName -> count.
-        const BDR_NAMES_LIST    = ["Chris Knapp", "Chiara Pate"];
+        const BDR_NAMES_LIST    = [...BDR_REPS];
         const AE_OWNER_IDS_LIST = Object.values(REP_OWNER_ID_MAP);
         const ownerIdToRepName  = Object.fromEntries(Object.entries(REP_OWNER_ID_MAP).map(([n,id]) => [id, n]));
         const ALL_REPS          = KNOWN_BDRS;
@@ -6294,6 +6306,7 @@ export const handler = async (event, context) => {
           const ownerIdToName = Object.fromEntries(Object.entries(REP_OWNER_ID_MAP).map(([n,id])=>[id,n]));
           const USER_ID_TO_NAME = {
             "78304576": "Chris Knapp", "87806380": "Chiara Pate",
+            "98527334": "Abigail Evans", "98527301": "Harley Reed",
             "76104455": "Matt Valin",  "55217954": "Joseph Haine",
             "83862037": "Tim Grisham", "289209454":"Irene Wong",
             "85819247": "Cole Hooper", "743772047":"John Hansel",
