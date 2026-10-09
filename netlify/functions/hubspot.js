@@ -5009,6 +5009,15 @@ export const handler = async (event, context) => {
         // owner; Chris had 1,094 vs 174.
         const BDR_REPS = new Set(["Chris Knapp", "Chiara Pate", "Abigail Evans", "Harley Reed"]);
 
+        // Opens and clicks must come from the SALES email properties. The
+        // hs_email_last_* contact properties only track MARKETING email, which
+        // these reps don't send, so they read zero (or close to it) no matter
+        // how much sales and sequence email goes out. Confirmed on live data for
+        // Abby: 5 contacts on the marketing open property vs 1,240 on the sales
+        // one. Marketing is kept as a fallback so nothing that had a value loses it.
+        const openedOf  = (p) => p?.hs_sales_email_last_opened  || p?.hs_email_last_open_date;
+        const clickedOf = (p) => p?.hs_sales_email_last_clicked || p?.hs_email_last_click_date;
+
         // Owner ID map — ALL reps including BDRs
         // Email engagement objects use hubspot_owner_id not assigned_bdr
         const REP_OWNER_ID_MAP = {
@@ -5128,7 +5137,16 @@ export const handler = async (event, context) => {
         const ownerIdToRepName  = Object.fromEntries(Object.entries(REP_OWNER_ID_MAP).map(([n,id]) => [id, n]));
         const ALL_REPS          = KNOWN_BDRS;
 
-        const countAllRepsForMetric = async (dateProp) => {
+        const countAllRepsForMetric = async (rawDateProp) => {
+          // Callers still pass the marketing property names; translate them to
+          // the sales equivalents here so every section that uses this helper
+          // (Email Activity, Team Activity, Weekly Recap) is fixed in one place.
+          const SALES_EQUIVALENT = {
+            hs_email_last_open_date:  "hs_sales_email_last_opened",
+            hs_email_last_click_date: "hs_sales_email_last_clicked",
+            hs_email_last_reply_date: "hs_sales_email_last_replied",
+          };
+          const dateProp = SALES_EQUIVALENT[rawDateProp] || rawDateProp;
           const dateF = sinceISO
             ? { propertyName: dateProp, operator: "GTE", value: sinceISO }
             : { propertyName: dateProp, operator: "HAS_PROPERTY" };
@@ -5136,7 +5154,7 @@ export const handler = async (event, context) => {
           // Run one count query per rep in parallel -- limit:1 so we just get total
           const results = await Promise.all(ALL_REPS.map(async repName => {
             const ownerId = REP_OWNER_ID_MAP[repName];
-            const repF = ownerId
+            const repF = ownerId && !BDR_REPS.has(repName)
               ? { propertyName: "hubspot_owner_id", operator: "EQ", value: ownerId }
               : { propertyName: "assigned_bdr",     operator: "EQ", value: repName };
             try {
@@ -5571,15 +5589,16 @@ export const handler = async (event, context) => {
             ["assigned_bdr","hubspot_owner_id","hs_latest_sequence_enrolled",
              "hs_latest_sequence_enrolled_date","hs_email_last_reply_date",
              "hs_sales_email_last_replied","hs_email_last_open_date",
-             "hs_email_last_click_date"],
+             "hs_email_last_click_date",
+             "hs_sales_email_last_opened","hs_sales_email_last_clicked"],
             "hs_latest_sequence_enrolled_date",
             500
           );
 
           // Opens/clicks/replies are ratios from the sample — scale to full enrolled count
           const sampleSize = allSeqContacts.length || 1;
-          const sampleOpened  = allSeqContacts.filter(c => c.properties?.hs_email_last_open_date).length;
-          const sampleClicked = allSeqContacts.filter(c => c.properties?.hs_email_last_click_date).length;
+          const sampleOpened  = allSeqContacts.filter(c => openedOf(c.properties)).length;
+          const sampleClicked = allSeqContacts.filter(c => clickedOf(c.properties)).length;
           const sampleReplied = allSeqContacts.filter(c =>
             c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied
           ).length;
@@ -5596,13 +5615,13 @@ export const handler = async (event, context) => {
           const repData = [];
           for (const repName of targetReps) {
             const ownerId = REP_OWNER_ID_MAP[repName];
-            const repContacts = allSeqContacts.filter(c => ownerId
+            const repContacts = allSeqContacts.filter(c => ownerId && !BDR_REPS.has(repName)
               ? c.properties?.hubspot_owner_id === ownerId
               : c.properties?.assigned_bdr === repName
             );
             const rEnrolled = repContacts.length;
-            const rOpened   = repContacts.filter(c => c.properties?.hs_email_last_open_date).length;
-            const rClicked  = repContacts.filter(c => c.properties?.hs_email_last_click_date).length;
+            const rOpened   = repContacts.filter(c => openedOf(c.properties)).length;
+            const rClicked  = repContacts.filter(c => clickedOf(c.properties)).length;
             const rReplied  = repContacts.filter(c =>
               c.properties?.hs_email_last_reply_date || c.properties?.hs_sales_email_last_replied
             ).length;
@@ -5624,8 +5643,8 @@ export const handler = async (event, context) => {
               if (!bySequence[seqId]) bySequence[seqId] = { sequenceId: seqId, enrolled:0, replied:0, opened:0, clicked:0 };
               bySequence[seqId].enrolled++;
               if (p.hs_email_last_reply_date || p.hs_sales_email_last_replied) bySequence[seqId].replied++;
-              if (p.hs_email_last_open_date)  bySequence[seqId].opened++;
-              if (p.hs_email_last_click_date) bySequence[seqId].clicked++;
+              if (openedOf(p))  bySequence[seqId].opened++;
+              if (clickedOf(p)) bySequence[seqId].clicked++;
             }
           } catch (e) { console.error("[reports sequences]", e.message); }
 
