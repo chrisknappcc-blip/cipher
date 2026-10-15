@@ -7,7 +7,17 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <!-- Capture URL hash before identity widget loads and potentially clears it -->
-    <script>window.__INITIAL_HASH__ = window.location.hash;</script>
+    <script>
+      window.__INITIAL_HASH__ = window.location.hash;
+      // Reset, confirmation, invite and email change links work exactly ONCE. The identity
+      // widget reads the token out of the URL on page load and uses it, and so does Cipher's
+      // own token screen, so both raced for it. Whichever lost showed "User not found".
+      // Cipher handles these itself (from __INITIAL_HASH__ above), so take the token out of
+      // the URL here, BEFORE the widget script below loads, and the widget never sees it.
+      if (/(confirmation|invite|recovery|email_change)_token=/.test(window.location.hash)) {
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+    </script>
     <script src="https://identity.netlify.com/v1/netlify-identity-widget.js"></script>
   </head>
   <body>
