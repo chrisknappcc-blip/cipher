@@ -152,5 +152,27 @@ export function installSessionGuards() {
   })
 }
 
+// Admin created accounts carry a "must change password" flag that sends the user to a
+// forced "set a new password" screen. When someone has just chosen their own password
+// through their own emailed reset link, that flag has done its job. Clear it, or they
+// finish the reset and are sent straight to a SECOND "set a new password" screen.
+// Returns true if cleared. Never throws: the worst case is they see the screen once more.
+export async function clearMustChangePasswordFlag(accessToken, fetchImpl = fetch) {
+  try {
+    const res = await fetchImpl('/.netlify/functions/clear-password-flag', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!res.ok) return false
+    // The flag also lives in the saved copy of the user, which is what the app reads.
+    const stored = readStored()
+    if (stored) {
+      stored.app_metadata = { ...(stored.app_metadata || {}), must_change_password: false }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stored))
+    }
+    return true
+  } catch { return false }
+}
+
 // Test hook only.
 export const _testing = { setRetryDelays: (d) => { RETRY_DELAYS = d } }

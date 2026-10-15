@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { apiFetch } from './api'
 import Dashboard from './Dashboard'
-import { getAccessToken, installSessionGuards, markIntentionalLogout, SessionExpiredError, jwtExpiry } from './session'
+import { getAccessToken, installSessionGuards, markIntentionalLogout, SessionExpiredError, jwtExpiry, clearMustChangePasswordFlag } from './session'
 
 // ── Read URL tokens at module load (before anything can clear the hash) ──────
 // Read from __INITIAL_HASH__ which is set before the identity widget loads and clears it
@@ -56,6 +56,8 @@ function TokenProcessScreen({ onDone }) {
   const [confirm, setConfirm]   = useState('')
   const [saving, setSaving]     = useState(false)
   const sessionRef = useRef(null)
+  const [resendEmail, setResendEmail] = useState('')
+  const [resendState, setResendState] = useState('idle') // idle | sending | sent | limited | error
 
   useEffect(() => {
     ;(async () => {
@@ -115,6 +117,23 @@ function TokenProcessScreen({ onDone }) {
     })()
   }, [])
 
+  // An expired, used or replaced reset link used to be a dead end: "Back to sign in", then
+  // find Forgot password inside a popup. Ask for a fresh link right here instead. GoTrue
+  // answers 200 whether or not the address has an account, so the message must not promise.
+  const handleResend = async () => {
+    const email = resendEmail.trim().toLowerCase()
+    if (!email.includes('@')) return
+    setResendState('sending')
+    try {
+      const r = await fetch(`${GOTRUE}/recover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      setResendState(r.status === 429 ? 'limited' : r.ok ? 'sent' : 'error')
+    } catch { setResendState('error') }
+  }
+
   const handleSetPassword = async () => {
     if (!password || password.length < 6) return
     if (password !== confirm) return
@@ -133,6 +152,7 @@ function TokenProcessScreen({ onDone }) {
       })
       if (!r.ok) throw new Error(`Could not update password (${r.status}).`)
       await r.json()
+      if (stored?.app_metadata?.must_change_password) await clearMustChangePasswordFlag(accessToken)
       setStatus('done')
       setTimeout(() => onDone(), 1200)
     } catch (e) {
@@ -172,6 +192,24 @@ function TokenProcessScreen({ onDone }) {
             <div style={{ fontSize:32, marginBottom:8 }}>⚠️</div>
             <h2 style={{ fontSize:18, fontWeight:500, color:'var(--text)', marginBottom:8 }}>Link problem</h2>
             <p style={{ fontSize:13, color:'var(--red)', marginBottom:16 }}>{error}</p>
+            {_recoveryToken && (
+              resendState === 'sent' ? (
+                <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:16 }}>
+                  If that address has a Cipher account, a new reset link is on its way. Use only the newest email, since each request replaces the older link.
+                </p>
+              ) : (
+                <form onSubmit={e => { e.preventDefault(); handleResend() }} style={{ width:'100%', marginBottom:14 }}>
+                  <p style={{ fontSize:12, color:'var(--text-tertiary)', marginBottom:8 }}>Reset links work once, and asking for a new one replaces the old one. Get a fresh link:</p>
+                  <input type="email" placeholder="Your work email" value={resendEmail} onChange={e => setResendEmail(e.target.value)} style={input} autoComplete="email" />
+                  {resendState === 'limited' && <div style={{ fontSize:12, color:'var(--red)', marginBottom:8 }}>Too many requests. Wait a minute, then try again.</div>}
+                  {resendState === 'error'   && <div style={{ fontSize:12, color:'var(--red)', marginBottom:8 }}>Couldn't send that. Try again in a moment.</div>}
+                  <button type="submit" disabled={resendState === 'sending' || !resendEmail.includes('@')}
+                    style={{ width:'100%', padding:'10px 24px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:14, fontWeight:500, cursor:'pointer', opacity: (resendState === 'sending' || !resendEmail.includes('@')) ? 0.5 : 1 }}>
+                    {resendState === 'sending' ? 'Sending…' : 'Email me a new link'}
+                  </button>
+                </form>
+              )
+            )}
             <button onClick={() => { window.location.href = '/' }} style={{ padding:'10px 24px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:14, cursor:'pointer' }}>
               Back to sign in
             </button>
