@@ -161,6 +161,7 @@ async function appendBotEntries(newBots) {
 
 import { withAuth } from "./utils/auth.js";
 import { getTokens, setTokens, isTokenValid, clearServiceTokens } from "./utils/tokenStore.js";
+import { classifyAccounts, removeAccount } from "./utils/accountAudit.js";
 import { getTabsForUser, getAllTabsForUser, getRegistry, saveRegistry, getPersonalTabs, savePersonalTabs, slugify, fetchPageTitle } from "./utils/tabRegistry.js";
 import { getTodos, addTodo, updateTodo, deleteTodo, bulkUpsertAutoDetected } from "./utils/todoStore.js";
 import { buildRightNowQueue, needsConfirmationTask, buildConfirmationTodo } from "./utils/rightNowQueue.js";
@@ -7515,6 +7516,94 @@ export const handler = async (event, context) => {
         return ok({ item });
       } catch (err) {
         return error(500, `Push error: ${err.message}`);
+      }
+    }
+
+    // ── ACCOUNT CLEANUP (admin only) ──────────────────────────────────────────
+    // The roster is built from active-users.json, which only ever grows: when
+    // someone's sign in account is deleted and recreated, the old profile stays
+    // behind with its own saved tokens and tasks, and the roster shows the same
+    // person twice (a manager can then push a task to the dead copy). This scans
+    // for that and lets an admin clean it up deliberately, one account at a time.
+    // The Identity service is the source of truth for whether an account is real.
+    // Same admin access pattern admin-create-user.js already uses.
+    const identityAdminFor = () => {
+      const ic = context.clientContext && context.clientContext.identity;
+      if (!ic?.url || !ic?.token) return null;
+      return { base: `${ic.url}/admin`, headers: { "Content-Type": "application/json", Authorization: `Bearer ${ic.token}` } };
+    };
+    const accountSas = () => (AZURE_SAS_TOKEN || "").startsWith("?") ? AZURE_SAS_TOKEN : `?${AZURE_SAS_TOKEN}`;
+
+    // GET /admin/accounts — read only. Joins roster profiles with the real
+    // Identity users and each profile's HubSpot connection state.
+    if (method === "GET" && path === "/admin/accounts") {
+      if (!isAdminUser(user)) return error(403, "Admin only");
+      try {
+        const profiles = await getActiveUserProfiles();
+
+        let identityUsers = null; // null = couldn't read it, never guess
+        const ia = identityAdminFor();
+        if (ia) {
+          const all = [];
+          let after;
+          let complete = false;
+          for (let page = 0; page < 30; page++) {
+            const qs = new URLSearchParams({ per_page: "100", ...(after ? { after } : {}) });
+            const r = await fetch(`${ia.base}/users?${qs}`, { headers: ia.headers });
+            if (!r.ok) break;
+            const d = await r.json().catch(() => ({}));
+            const users = Array.isArray(d) ? d : (d.users || []);
+            all.push(...users);
+            if (users.length < 100) { complete = true; break; }
+            after = users[users.length - 1]?.id;
+          }
+          if (complete) identityUsers = all;
+        }
+
+        const hubspotByUserId = {};
+        const ids = profiles.map(p => p.userId);
+        for (let i = 0; i < ids.length; i += 4) {
+          await Promise.all(ids.slice(i, i + 4).map(async (id) => {
+            try {
+              await hsGet(id, "/crm/v3/owners", { limit: 1 });
+              hubspotByUserId[id] = "ok";
+            } catch (e) {
+              const m = String(e.message || "");
+              hubspotByUserId[id] = /not connected/i.test(m) ? "none" : /MISSING_SCOPES/.test(m) ? "stale" : "error";
+            }
+          }));
+        }
+        return ok(classifyAccounts({ profiles, identityUsers, hubspotByUserId }));
+      } catch (err) {
+        return error(500, `Accounts error: ${err.message}`);
+      }
+    }
+
+    // POST /admin/accounts/remove  { userId, deleteSignIn?, confirmEmail? }
+    // A leftover profile (sign in account already gone) is removed outright.
+    // A LIVE account is only removed with deleteSignIn plus the typed email, and
+    // all of that is enforced inside removeAccount (utils/accountAudit.js), where
+    // it is tested, not just in the browser.
+    if (method === "POST" && path === "/admin/accounts/remove") {
+      if (!isAdminUser(user)) return error(403, "Admin only");
+      try {
+        const body = JSON.parse(event.body || "{}");
+        const targetId = String(body.userId || "");
+        const profiles = await getActiveUserProfiles();
+        const result = await removeAccount({
+          targetId,
+          callerId: user.userId,
+          deleteSignIn: !!body.deleteSignIn,
+          confirmEmail: body.confirmEmail,
+          ia: identityAdminFor(),
+          profileEmail: profiles.find(p => p.userId === targetId)?.email || null,
+          registryUrl: activeUsersBlobUrl(),
+          blobBase: `https://${AZURE_ACCOUNT}.blob.core.windows.net/${AZURE_CONTAINER}`,
+          sas: accountSas(),
+        });
+        return result.status === 200 ? ok(result.body) : error(result.status, result.body.error);
+      } catch (err) {
+        return error(500, `Remove error: ${err.message}`);
       }
     }
 
