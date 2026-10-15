@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { apiFetch } from './api'
 import Dashboard from './Dashboard'
+import { getAccessToken, installSessionGuards, markIntentionalLogout, SessionExpiredError, jwtExpiry } from './session'
 
 // ── Read URL tokens at module load (before anything can clear the hash) ──────
 // Read from __INITIAL_HASH__ which is set before the identity widget loads and clears it
@@ -25,9 +26,24 @@ function storeSession(resp) {
     token_type:    resp.token_type    || 'bearer',
     expires_in:    resp.expires_in    || 3600,
     refresh_token: resp.refresh_token || '',
-    expires_at:    Math.round(Date.now() / 1000) + (resp.expires_in || 3600),
+    // ms, read from the JWT itself (this used to be written in seconds)
+    expires_at:    jwtExpiry(resp.access_token) || (Date.now() + (resp.expires_in || 3600) * 1000),
   }
   localStorage.setItem('gotrue.user', JSON.stringify({ ...user, url: GOTRUE, token }))
+}
+
+// GoTrue's /verify answers with tokens ONLY, no user object. Storing just that
+// leaves the session with no id, email or app_metadata, so the app would run
+// with user.email undefined. Fetch the user too, then store the full session.
+async function establishSession(tokenResp) {
+  let user = tokenResp.user || null
+  if (!user) {
+    try {
+      const r = await fetch(`${GOTRUE}/user`, { headers: { Authorization: `Bearer ${tokenResp.access_token}` } })
+      if (r.ok) user = await r.json()
+    } catch { /* fall back to a token-only session */ }
+  }
+  storeSession({ ...tokenResp, user: user || undefined })
 }
 
 // ── Token-processing screen shown before the widget inits ─────────────────────
@@ -53,21 +69,28 @@ function TokenProcessScreen({ onDone }) {
           })
           if (!r.ok) throw new Error(`Confirmation failed (${r.status}). The link may have expired — request a new one.`)
           const data = await r.json()
-          storeSession(data)
+          await establishSession(data)
           setStatus('done')
           setTimeout(() => onDone(), 1200)
         }
 
         if (_recoveryToken) {
-          // Recovery — exchange token for session, then show set-password form
-          const r = await fetch(`${GOTRUE}/recover`, {
+          // Recovery: exchange the token for a session, then show the set-password form.
+          // This must be /verify with type "recovery". The old code POSTed the token to
+          // /recover, which is the endpoint that SENDS a reset email and requires an
+          // email address, so it answered 422 "Password recovery requires an email" and
+          // no reset link ever worked.
+          const r = await fetch(`${GOTRUE}/verify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: _recoveryToken }),
+            body: JSON.stringify({ token: _recoveryToken, type: 'recovery' }),
           })
-          if (!r.ok) throw new Error(`Reset link invalid or expired (${r.status}). Request a new one.`)
+          if (!r.ok) {
+            const body = await r.json().catch(() => ({}))
+            throw new Error(`Reset link invalid or expired${body.msg ? ` (${body.msg})` : ` (${r.status})`}. Request a new one.`)
+          }
           const data = await r.json()
-          storeSession(data)
+          await establishSession(data)
           sessionRef.current = data
           setStatus('needsPassword')
         }
@@ -81,7 +104,7 @@ function TokenProcessScreen({ onDone }) {
           })
           if (!r.ok) throw new Error(`Email change failed (${r.status}).`)
           const data = await r.json()
-          storeSession(data)
+          await establishSession(data)
           setStatus('done')
           setTimeout(() => onDone(), 1200)
         }
@@ -245,7 +268,7 @@ function MandatoryPasswordChange({ user, onDone }) {
       // admin/service credential, never through the user's own update()
       // call above, which is exactly what makes the flag a real enforced
       // gate rather than something a new user could quietly bypass.
-      const jwt = await netlifyIdentity.currentUser().jwt()
+      const jwt = await getAccessToken()
       const r = await fetch('/.netlify/functions/clear-password-flag', {
         method: 'POST',
         headers: { Authorization: `Bearer ${jwt}` },
@@ -395,16 +418,35 @@ export default function App() {
     localStorage.setItem('cipher-font-size', next)
   }, [])
 
-  const getToken = useCallback(async () => {
-    const u = user || netlifyIdentity.currentUser()
-    if (!u?.jwt) throw new Error('Not authenticated')
-    return u.jwt()
-  }, [user])
+  const [sessionNote, setSessionNote] = useState(null)
 
-  const signOut = useCallback(() => {
-    netlifyIdentity.logout()
+  // The server actually rejected the refresh token (revoked, expired, user removed).
+  // Drop the dead session and say why, instead of leaving the app half working.
+  const handleSessionExpired = useCallback(() => {
+    try { localStorage.removeItem('gotrue.user') } catch { /* ignore */ }
+    setSessionNote('Your session expired. Please sign in again.')
     setUser(null)
   }, [])
+
+  // All API calls get their token here. See session.js for why this doesn't call
+  // user.jwt() directly: the library signs people out on any failed refresh.
+  const getToken = useCallback(async (opts) => {
+    try {
+      return await getAccessToken(opts)
+    } catch (err) {
+      if (err instanceof SessionExpiredError) handleSessionExpired()
+      throw err
+    }
+  }, [handleSessionExpired])
+
+  const signOut = useCallback(() => {
+    markIntentionalLogout()
+    netlifyIdentity.logout()
+    setUser(null)
+    setSessionNote(null)
+  }, [])
+
+  useEffect(() => { installSessionGuards() }, [])
 
   const onScopeError = useCallback((msg) => {
     setHsConnected(false)
@@ -452,7 +494,7 @@ export default function App() {
   useEffect(() => {
     if (!user) { setCheckingConnection(false); return }
     setCheckingConnection(true)
-    apiFetch('/api/hubspot/status', () => user.jwt())
+    apiFetch('/api/hubspot/status', getToken)
       .then(d => { setHsConnected(!!d.hubspot); setNeedsReconnect(!d.hubspot) })
       .catch(() => { setHsConnected(false); setNeedsReconnect(true) })
       .finally(() => setCheckingConnection(false))
@@ -491,6 +533,7 @@ export default function App() {
         <div style={{ textAlign:'center' }}>
           <div style={{ fontSize:13, fontWeight:500, letterSpacing:'.06em', textTransform:'uppercase', color:'var(--text-tertiary)', marginBottom:8 }}>CarePathIQ</div>
           <h1 style={{ fontSize:22, fontWeight:500, color:'var(--text)', marginBottom:'1.5rem' }}>Sales Command Center</h1>
+          {sessionNote && <p style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:'1rem' }}>{sessionNote}</p>}
           <button onClick={() => netlifyIdentity.open()}
             style={{ padding:'10px 28px', background:'var(--accent)', color:'#fff', border:'none', borderRadius:'var(--radius)', fontSize:15, fontWeight:500, cursor:'pointer' }}>
             Sign in
@@ -542,7 +585,7 @@ function ConnectHubSpot({ user, onConnect }) {
   const startOAuth = async () => {
     setLoading(true); setError(null)
     try {
-      const jwt = typeof user?.jwt === 'function' ? await user.jwt() : await netlifyIdentity.currentUser()?.jwt()
+      const jwt = await getAccessToken()
       if (!jwt) throw new Error('Not authenticated — please sign out and sign in again.')
       const r = await fetch('/api/hubspot/auth/connect', {
         headers: { Authorization: `Bearer ${jwt}` }
@@ -559,7 +602,7 @@ function ConnectHubSpot({ user, onConnect }) {
       setLoading(true)
       ;(async () => {
         try {
-          const jwt = typeof user?.jwt === 'function' ? await user.jwt() : await netlifyIdentity.currentUser()?.jwt()
+          const jwt = await getAccessToken()
           if (!jwt) throw new Error('Not authenticated — please sign out and sign in again.')
           const r = await fetch(`/api/hubspot/auth/callback${window.location.search}`, {
             headers: { Authorization: `Bearer ${jwt}` }
@@ -587,7 +630,7 @@ function ConnectHubSpot({ user, onConnect }) {
             </button>
         }
         <div style={{ marginTop:16 }}>
-          <button onClick={() => netlifyIdentity.logout()} style={{ fontSize:12, color:'var(--text-tertiary)', background:'none', border:'none', cursor:'pointer' }}>
+          <button onClick={() => { markIntentionalLogout(); netlifyIdentity.logout() }} style={{ fontSize:12, color:'var(--text-tertiary)', background:'none', border:'none', cursor:'pointer' }}>
             Sign out
           </button>
         </div>

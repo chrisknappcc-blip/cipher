@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { apiFetch } from './api'
+import { getAccessToken } from './session'
 
 // ResourcesView.jsx — Cipher's read-only window into the same content
 // library the Onboarding tool authors into (Azure Blob container
@@ -97,7 +98,7 @@ export default function ResourcesView({ getToken, currentUserName }) {
     if (!newLabel.trim() || !newUrl.trim()) { setAddError('Label and URL are required.'); return }
     setAddSaving(true); setAddError(null)
     try {
-      const jwt = await window.netlifyIdentity.currentUser().jwt()
+      const jwt = await getAccessToken()
       const res = await fetch('/.netlify/functions/add-resource-link', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },

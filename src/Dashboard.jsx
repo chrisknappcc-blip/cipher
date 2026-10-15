@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { apiFetch } from './api'
+import { getAccessToken } from './session'
 import RightNowView from './RightNowView'
 import TeamView from './TeamView'
 import PipelineReviewView from './PipelineReviewView'
@@ -1127,7 +1128,7 @@ function BackfillPrimaryRepPanel({ safeFetch }) {
         let after = null
         let keepGoing = true
         while (keepGoing) {
-          const jwt = await window.netlifyIdentity.currentUser().jwt()
+          const jwt = await getAccessToken()
           const res = await fetch('/.netlify/functions/hubspot/admin/backfill-primary-outreach-rep', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
@@ -1217,7 +1218,7 @@ function ForceDisconnectPanel({ safeFetch }) {
     try {
       const res = await fetch('/.netlify/functions/hubspot/team/disconnect', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await window.netlifyIdentity.currentUser().jwt()}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await getAccessToken()}` },
         body: JSON.stringify({ targetEmail: trimmed }),
       })
       const data = await res.json()
@@ -1288,7 +1289,7 @@ function AddTeamMemberPanel({ safeFetch }) {
     try {
       const res = await fetch('/.netlify/functions/admin-create-user', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await window.netlifyIdentity.currentUser().jwt()}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await getAccessToken()}` },
         body: JSON.stringify({ email: trimmed }),
       })
       const data = await res.json()
