@@ -1204,6 +1204,175 @@ function BackfillPrimaryRepPanel({ safeFetch }) {
   )
 }
 
+// ─── Account Cleanup Panel ──────────────────────────────────────────────────
+// Admin only. The roster comes from a list that only ever grows: when someone's
+// sign in account is deleted and recreated, the old profile stays behind and the
+// person shows up twice (and a pushed task can land on the dead copy). Scan first,
+// which changes nothing, then act on one account at a time.
+function AccountCleanupPanel() {
+  const [open, setOpen]         = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [data, setData]         = useState(null)
+  const [busy, setBusy]         = useState(null)
+  const [error, setError]       = useState(null)
+  const [notice, setNotice]     = useState(null)
+
+  const call = async (path, options = {}) => {
+    const jwt = await getAccessToken()
+    const res = await fetch(`/.netlify/functions/hubspot${path}`, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`)
+    return body
+  }
+
+  const scan = async () => {
+    setScanning(true); setError(null)
+    try { setData(await call('/admin/accounts')) }
+    catch (e) { setError(e.message) }
+    finally { setScanning(false) }
+  }
+
+  const act = async (id, message, fn) => {
+    setBusy(id); setError(null); setNotice(null)
+    try { const out = await fn(); setNotice(message(out)); await scan() }
+    catch (e) { setError(e.message) }
+    finally { setBusy(null) }
+  }
+
+  const removeLeftover = (row) => {
+    if (!window.confirm(`Remove the leftover profile for ${row.email} (${row.userId.slice(0, 8)})?\n\nIts sign in account no longer exists. This clears its roster entry plus any saved HubSpot or Outlook connection, tasks and pins stored under that old ID.`)) return
+    act(row.userId, () => `Removed the leftover profile for ${row.email}.`,
+      () => call('/admin/accounts/remove', { method: 'POST', body: JSON.stringify({ userId: row.userId }) }))
+  }
+
+  const deleteAccount = (id, email) => {
+    const typed = window.prompt(`This permanently deletes the sign in account for ${email} and everything saved for it. It cannot be undone.\n\nType the email address to confirm:`)
+    if (typed === null) return
+    act(id, (o) => `Deleted the sign in account for ${o.email || email}.`,
+      () => call('/admin/accounts/remove', { method: 'POST', body: JSON.stringify({ userId: id, deleteSignIn: true, confirmEmail: typed }) }))
+  }
+
+  const forceReconnect = (row) =>
+    act(row.userId, () => `${row.email} will be asked to reconnect HubSpot the next time they load Cipher.`,
+      () => call('/team/disconnect', { method: 'POST', body: JSON.stringify({ targetUserId: row.userId }) }))
+
+  const tones = {
+    good:    { bg:'rgba(22,163,74,.15)',  fg:'var(--green, #16a34a)' },
+    bad:     { bg:'rgba(220,38,38,.15)',  fg:'var(--red, #dc2626)' },
+    warn:    { bg:'rgba(217,119,6,.18)',  fg:'#d97706' },
+    neutral: { bg:'var(--bg-secondary)',  fg:'var(--text-tertiary)' },
+  }
+  const Chip = ({ tone = 'neutral', children }) => (
+    <span style={{ fontSize:10.5, padding:'2px 7px', borderRadius:10, background:tones[tone].bg, color:tones[tone].fg, whiteSpace:'nowrap' }}>{children}</span>
+  )
+  const btn = (danger) => ({
+    fontSize:11, padding:'4px 9px', borderRadius:6, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.5 : 1,
+    background: danger ? 'transparent' : 'var(--bg-secondary)',
+    border: '1px solid ' + (danger ? 'var(--red, #dc2626)' : 'var(--border)'),
+    color: danger ? 'var(--red, #dc2626)' : 'var(--text)',
+  })
+  const hsChip = (h) => h === 'ok' ? <Chip tone="good">HubSpot connected</Chip>
+    : h === 'stale' ? <Chip tone="warn">HubSpot: old permissions</Chip>
+    : h === 'none'  ? <Chip tone="warn">HubSpot: not connected</Chip>
+    : <Chip>HubSpot: unknown</Chip>
+
+  const rows = data?.rows || []
+  const ghosts = rows.filter(r => r.status === 'ghost').length
+  const needs  = rows.filter(r => r.status === 'needs_reconnect').length
+
+  return (
+    <div style={{ marginBottom:'1.25rem' }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ fontSize:11, color:'var(--text-tertiary)', background:'none', border:'none',
+          cursor:'pointer', padding:'2px 0', display:'flex', alignItems:'center', gap:5 }}>
+        <span style={{ fontSize:10 }}>{open ? '▼' : '▶'}</span>
+        Account Cleanup
+      </button>
+      {open && (
+        <div style={{ marginTop:8, padding:'14px 16px', background:'var(--bg-panel)',
+          border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', maxWidth:760 }}>
+          <div style={{ fontSize:11, color:'var(--text-tertiary)', marginBottom:10, lineHeight:1.5 }}>
+            Finds leftover profiles from deleted accounts (the cause of people showing up twice in the roster),
+            accounts with outdated HubSpot permissions, and sign in accounts that never opened Cipher.
+            Scanning changes nothing. Every action below is one account at a time.
+          </div>
+          <button onClick={scan} disabled={scanning || !!busy}
+            style={{ padding:'8px 16px', background: scanning ? 'var(--bg-secondary)' : 'var(--accent)',
+              color: scanning ? 'var(--text-tertiary)' : '#fff', border:'none', borderRadius:'var(--radius)',
+              fontSize:13, fontWeight:500, cursor: scanning ? 'not-allowed' : 'pointer' }}>
+            {scanning ? 'Scanning…' : data ? 'Scan again' : 'Scan accounts'}
+          </button>
+
+          {error  && <div style={{ marginTop:10, fontSize:12, color:'var(--red, #dc2626)' }}>{error}</div>}
+          {notice && <div style={{ marginTop:10, fontSize:12, color:'var(--green, #16a34a)' }}>✓ {notice}</div>}
+
+          {data && (
+            <div style={{ marginTop:12 }}>
+              <div style={{ fontSize:12, color:'var(--text-secondary)', marginBottom:8 }}>
+                {rows.length} profiles · {ghosts} leftover · {needs} need to reconnect HubSpot
+                {data.identityOnly?.length ? ` · ${data.identityOnly.length} sign in account${data.identityOnly.length === 1 ? '' : 's'} never opened Cipher` : ''}
+              </div>
+              {!data.identityListed && (
+                <div style={{ fontSize:12, color:'#d97706', marginBottom:8 }}>
+                  Couldn't read the list of sign in accounts, so I can't tell which profiles are leftovers. Nothing can be removed until that works.
+                </div>
+              )}
+
+              {rows.map(row => (
+                <div key={row.userId} style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:8, padding:'7px 0', borderTop:'1px solid var(--border)' }}>
+                  <div style={{ flex:'1 1 220px', minWidth:0 }}>
+                    <div style={{ fontSize:12.5, color:'var(--text)', overflowWrap:'anywhere' }}>{row.email || '(no email)'}</div>
+                    <div style={{ fontSize:10.5, color:'var(--text-tertiary)' }}>{row.userId.slice(0, 8)}{row.identityCreatedAt ? ` · created ${new Date(row.identityCreatedAt).toLocaleDateString()}` : ''}</div>
+                  </div>
+                  <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+                    {row.identityExists === true  && <Chip tone="good">Sign in: exists</Chip>}
+                    {row.identityExists === false && <Chip tone="bad">Sign in: gone</Chip>}
+                    {row.identityExists === null  && <Chip>Sign in: unknown</Chip>}
+                    {row.identityExists !== false && hsChip(row.hubspot)}
+                    {row.duplicates > 1 && <Chip tone="warn">duplicate email</Chip>}
+                  </div>
+                  <div style={{ display:'flex', gap:6 }}>
+                    {row.status === 'ghost' && (
+                      <button disabled={!!busy} onClick={() => removeLeftover(row)} style={btn(true)}>{busy === row.userId ? 'Working…' : 'Remove leftover'}</button>
+                    )}
+                    {row.identityExists === true && row.hubspot === 'stale' && (
+                      <button disabled={!!busy} onClick={() => forceReconnect(row)} style={btn(false)}>Force reconnect</button>
+                    )}
+                    {row.identityExists === true && (
+                      <button disabled={!!busy} onClick={() => deleteAccount(row.userId, row.email)} style={btn(true)}>Delete account…</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+
+              {data.identityOnly?.length > 0 && (
+                <div style={{ marginTop:10 }}>
+                  <div style={{ fontSize:11, color:'var(--text-tertiary)', textTransform:'uppercase', letterSpacing:'.4px', margin:'8px 0 2px' }}>
+                    Sign in accounts that have never opened Cipher
+                  </div>
+                  {data.identityOnly.map(u => (
+                    <div key={u.userId} style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:8, padding:'7px 0', borderTop:'1px solid var(--border)' }}>
+                      <div style={{ flex:'1 1 220px', minWidth:0 }}>
+                        <div style={{ fontSize:12.5, color:'var(--text)', overflowWrap:'anywhere' }}>{u.email}</div>
+                        <div style={{ fontSize:10.5, color:'var(--text-tertiary)' }}>{u.userId.slice(0, 8)}{u.createdAt ? ` · created ${new Date(u.createdAt).toLocaleDateString()}` : ''}</div>
+                      </div>
+                      {u.confirmed ? <Chip tone="good">confirmed</Chip> : <Chip tone="warn">not confirmed</Chip>}
+                      <button disabled={!!busy} onClick={() => deleteAccount(u.userId, u.email)} style={btn(true)}>Delete account…</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ForceDisconnectPanel({ safeFetch }) {
   const [open, setOpen]       = useState(false)
   const [email, setEmail]     = useState('')
@@ -2638,6 +2807,11 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
             {/* ── Backfill Primary Outreach Rep ── */}
             {currentUserName === 'Chris Knapp' && (
               <BackfillPrimaryRepPanel safeFetch={safeFetch} />
+            )}
+
+            {/* ── Account Cleanup ── */}
+            {currentUserName === 'Chris Knapp' && (
+              <AccountCleanupPanel />
             )}
 
             {/* ── Bot Opens Log ── */}
