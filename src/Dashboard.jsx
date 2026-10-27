@@ -5,6 +5,7 @@ import RightNowView from './RightNowView'
 import TeamView from './TeamView'
 import PipelineReviewView from './PipelineReviewView'
 import ResourcesView from './ResourcesView'
+import DebriefsView from './DebriefsView'
 
 // ─── Persona detection ────────────────────────────────────────────────────────
 const PERSONAS = {
@@ -2044,6 +2045,16 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
 
   // UI
   const [activeTab, setActiveTab]         = useState('right-now')
+  // How many call debriefs (plus an unopened weekly recap) this person hasn't seen yet,
+  // for the badge on the Debriefs tab. Checked on load and every 5 minutes.
+  const [debriefUnread, setDebriefUnread] = useState(0)
+  useEffect(() => {
+    let alive = true
+    const load = () => apiFetch('/api/debriefs/unread', getToken).then((r) => { if (alive) setDebriefUnread(r.count || 0) }).catch(() => {})
+    load()
+    const t = setInterval(load, 5 * 60 * 1000)
+    return () => { alive = false; clearInterval(t) }
+  }, [getToken])
   const [selectedContact, setSelectedContact] = useState(null)
   const [dateRange, setDateRange]         = useState('168')
   const [signalSort, setSignalSort]       = useState('score_desc')
@@ -2611,6 +2622,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     { key:'dashboard',     label:'Dashboard',icon:'list',    color:'var(--nav-dashboard)' },
     { key:'gold-command',  label:'Gold Accounts', icon:'star', color:'var(--nav-gold)' },
     { key:'meetings-tracker', label:'Meetings', icon:'calendar', color:'var(--nav-goldoverview)' },
+    { key:'debriefs',      label:'Debriefs', icon:'mic',     color:'var(--nav-debriefs, #8A5FBF)' },
     { key:'reports',       label:'Reports', icon:'chart',    color:'var(--nav-reports)' },
     { key:'pipeline-review', label:'Pipeline Review', icon:'pipeline', color:'var(--nav-pipeline)' },
     { key:'team',          label:'Team',    icon:'users',    color:'var(--nav-team)' },
@@ -2639,6 +2651,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     if (name === 'users') return <svg {...common}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
     if (name === 'pipeline') return <svg {...common}><path d="M4 4h16v4l-6 6v6l-4-2v-4L4 8z"/></svg>
     if (name === 'book') return <svg {...common}><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+    if (name === 'mic')  return <svg {...common}><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
     return null
   }
 
@@ -2741,11 +2754,16 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
                   {newSignalCount}
                 </span>
               )}
+              {tab.key === 'debriefs' && debriefUnread > 0 && (
+                <span style={{ position:'absolute', top:-2, right:6, fontSize:9, fontWeight:600, background:'var(--red)', color:'#fff', borderRadius:10, padding:'0px 5px', minWidth:14, textAlign:'center' }}>
+                  {debriefUnread}
+                </span>
+              )}
             </button>
           ))}
         </nav>
 
-      <div style={{ flex:1, padding:'1.5rem', maxWidth: activeTab === 'pipeline-review' ? 1600 : 1280, margin:'0 auto', width:'100%' }}>
+      <div style={{ flex:1, padding:'1.5rem', maxWidth: (activeTab === 'pipeline-review' || activeTab === 'debriefs') ? 1600 : 1280, margin:'0 auto', width:'100%' }}>
 
         {activeTab === 'right-now' && (
           <RightNowView getToken={getToken} user={user} />
@@ -2761,6 +2779,10 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
 
         {activeTab === 'resources' && (
           <ResourcesView getToken={getToken} currentUserName={currentUserName} />
+        )}
+
+        {activeTab === 'debriefs' && (
+          <DebriefsView getToken={getToken} onUnreadChange={setDebriefUnread} />
         )}
 
         {activeTab === 'dashboard' && (
