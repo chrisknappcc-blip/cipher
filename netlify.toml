@@ -46,6 +46,11 @@ from = "/api/ai/*"
 to = "/.netlify/functions/ai/:splat"
 status = 200
 
+[[redirects]]
+from = "/api/debriefs/*"
+to = "/.netlify/functions/debriefs/:splat"
+status = 200
+
 [[headers]]
 for = "/.netlify/functions/*"
 [headers.values]
@@ -86,3 +91,14 @@ Cache-Control = "public, max-age=31536000, immutable"
 # App
 # APP_URL https://yourapp.netlify.app
 # ZOOMINFO_API_KEY From ZoomInfo developer portal (add later)
+#
+# Gong call debriefs
+# GONG_ACCESS_KEY          Gong > Company Settings > Ecosystem > API (you must be a technical admin)
+# GONG_ACCESS_KEY_SECRET   Shown ONCE when the key is created; Gong cannot show it again. (A key created
+#                          by hand has no scopes to pick. It can read the workspace's calls.)
+# GONG_BASE_URL            Shown on the same Gong API page, e.g. https://company-17.api.gong.io
+# DEBRIEF_INTERNAL_SECRET  Any long random string. Protects the background analysis job.
+# DEBRIEF_VIEW_ALL_EMAILS  Comma separated. Who sees every rep's debriefs (default: jhansel@carecontinuity.com)
+# DEBRIEF_MODEL            Optional. Defaults to claude-sonnet-5-5
+# GONG_BACKFILL_DAYS       Optional. How far back the very first poll looks (default 2)
+# (ANTHROPIC_API_KEY and the Azure storage settings above are reused as they are.)
