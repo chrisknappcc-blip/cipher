@@ -19,6 +19,11 @@ timeout = 60
 [functions."debriefs"]
 timeout = 26
 
+# The 15 minute check. Declared here as well as inside gong-poll.js: the first version relied only on the
+# in-file setting, and Netlify's scheduler was not seen calling it.
+[functions."gong-poll"]
+schedule = "*/15 * * * *"
+
 [[redirects]]
 from = "/api/hubspot-gap-search"
 to = "/.netlify/functions/hubspot-gap-search"
