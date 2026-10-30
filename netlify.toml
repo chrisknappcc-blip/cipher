@@ -16,6 +16,9 @@ timeout = 26
 [functions."hubspot-gap-search"]
 timeout = 60
 
+[functions."debriefs"]
+timeout = 26
+
 [[redirects]]
 from = "/api/hubspot-gap-search"
 to = "/.netlify/functions/hubspot-gap-search"
