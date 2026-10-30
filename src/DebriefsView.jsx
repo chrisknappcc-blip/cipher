@@ -53,12 +53,21 @@ function Callout({ color = 'var(--accent)', children }) {
 
 function Table({ headers, rows, empty }) {
   if (!rows || !rows.length) return empty ? <div style={muted}>{empty}</div> : null
-  const cell = { padding: '6px 8px', verticalAlign: 'top', fontSize: 12.5, lineHeight: 1.45, overflowWrap: 'anywhere', borderTop: '1px solid var(--border)' }
+  // Short columns (ratings, times, names, statuses) stay on one line. Long text columns get a minimum
+  // width. Text breaks at spaces (break-word); "anywhere" let the browser shrink a column to a few
+  // letters, which is what split "Rating" into "Rati / ng" and names into "Roberso / n".
+  const kinds = headers.map((_, j) => {
+    const vals = rows.map((r) => r[j])
+    if (vals.some((v) => v != null && typeof v !== 'string' && typeof v !== 'number')) return 'auto'
+    return Math.max(0, ...vals.map((v) => String(v ?? '').length)) <= 24 ? 'narrow' : 'wide'
+  })
+  const kindStyle = (k) => (k === 'narrow' ? { whiteSpace: 'nowrap' } : k === 'wide' ? { minWidth: 170 } : {})
+  const cell = { padding: '6px 8px', verticalAlign: 'top', fontSize: 12.5, lineHeight: 1.45, overflowWrap: 'break-word', borderTop: '1px solid var(--border)' }
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr>{headers.map((h, i) => <th key={i} style={{ ...cell, borderTop: 'none', textAlign: 'left', fontSize: 11, color: 'var(--text-tertiary)', fontWeight: 600 }}>{h}</th>)}</tr></thead>
-        <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} style={{ ...cell, color: 'var(--text)' }}>{c}</td>)}</tr>)}</tbody>
+        <thead><tr>{headers.map((h, i) => <th key={i} style={{ ...cell, borderTop: 'none', textAlign: 'left', fontSize: 11, color: 'var(--text-tertiary)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+        <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} style={{ ...cell, color: 'var(--text)', ...kindStyle(kinds[j]) }}>{c}</td>)}</tr>)}</tbody>
       </table>
     </div>
   )
@@ -87,7 +96,7 @@ export function CallCard({ item, selected, unread, onClick }) {
   )
 }
 
-export function DebriefDetail({ record, viewAll, onReanalyze, busy }) {
+export function DebriefDetail({ record, viewAll, onReanalyze, busy, reanalyzing }) {
   const g = record.gong || {}
   const a = record.analysis
   const fullOrg = a?.prospect?.organization || ''
@@ -107,11 +116,15 @@ export function DebriefDetail({ record, viewAll, onReanalyze, busy }) {
         <div className="debrief-no-print" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {g.url && <a href={g.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11.5, padding: '5px 10px', borderRadius: 8, border: '1px solid var(--border)', color: 'var(--text)' }}>Open in Gong</a>}
           {a && <button onClick={() => window.print()} style={{ fontSize: 11.5, padding: '5px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}>Print or save as PDF</button>}
-          {viewAll && onReanalyze && <button disabled={busy} onClick={onReanalyze} style={{ fontSize: 11.5, padding: '5px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>{busy ? 'Queued' : 'Re-analyze'}</button>}
+          {viewAll && onReanalyze && <button disabled={busy || reanalyzing} onClick={onReanalyze} style={{ fontSize: 11.5, padding: '5px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>{busy || reanalyzing ? 'Queued' : 'Re-analyze'}</button>}
         </div>
       </div>
 
-      {!a && (
+      {reanalyzing && (
+        <div className="debrief-no-print" style={{ marginTop: 14 }}><Callout color="var(--accent)">Re-analysis in progress. This usually takes a minute or two, and this page will update by itself.</Callout></div>
+      )}
+
+      {!a && !reanalyzing && (
         <div style={{ marginTop: 14 }}>
           <Callout color={record.status === 'failed' ? '#A63D40' : '#6B7280'}>
             {record.status === 'failed'
@@ -240,6 +253,7 @@ function StatusPanel({ data, onBackfill, onPoll, busy, notice }) {
         ['Last error', data.poll.lastPollError || 'none'],
         ['Last pass', data.poll.counts ? `${data.poll.counts.listed} listed, ${data.poll.counts.external} external, ${data.poll.counts.waiting} waiting, ${data.poll.counts.triggered} started, ${data.poll.counts.deferred} deferred` : 'n/a'],
         ['Waiting on a transcript', data.poll.waitingOnTranscript],
+        ['Recent requests to the poller', (data.poll.ticks && data.poll.ticks.length) ? data.poll.ticks.slice(0, 5).map((t) => `${fmtWhen(t.at)} (${friendlyCaller(t.caller)})`).join(', ') : 'none yet'],
         ['Backfill', data.poll.backfillFrom ? `running from ${fmtWhen(data.poll.backfillFrom)}` : 'not running'],
       ]} />
       <H>Calls, this week and last</H>
@@ -250,11 +264,20 @@ function StatusPanel({ data, onBackfill, onPoll, busy, notice }) {
           <button disabled={busy} onClick={onPoll} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>{busy ? 'Working...' : 'Check Gong now'}</button>
           <button disabled={busy} onClick={onBackfill} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>Analyze the past 7 days of calls</button>
         </div>
-        <div style={{ ...muted, marginTop: 4 }}>Both run a check straight away and report what they found. The scheduled check then continues every 15 minutes, three calls at a time.</div>
+        <div style={{ ...muted, marginTop: 4 }}>Both run a check straight away and report what they found. The scheduled check then continues every 15 minutes, three calls at a time. If "Recent requests to the poller" never shows the Netlify scheduler, the schedule is not running.</div>
         {notice && <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--bg-secondary)', fontSize: 12.5, color: 'var(--text)', overflowWrap: 'anywhere' }}>{notice}</div>}
       </div>
     </div>
   )
+}
+
+// Who asked the poller to run: Netlify's scheduler, a person in a browser, or the admin button.
+export function friendlyCaller(c) {
+  const t = String(c || '')
+  if (/clockwork/i.test(t)) return 'Netlify scheduler'
+  if (/admin/i.test(t)) return 'admin button'
+  if (/mozilla|chrome|safari|firefox|edge/i.test(t)) return 'a web browser'
+  return t || 'unknown'
 }
 
 // What a "check Gong now" pass found, in plain words.
@@ -269,7 +292,7 @@ export function describePoll(p, lead = '') {
   return say(`Found ${p.external} calls with an outside participant. ${p.triggered} started now, ${p.deferred} queued for the next passes (three at a time, every 15 minutes).${errs}`)
 }
 
-export default function DebriefsView({ getToken, onUnreadChange }) {
+export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 8000, listRefreshMs = 30000 }) {
   const [weeks, setWeeks] = useState(2)
   const [list, setList] = useState(null)
   const [error, setError] = useState(null)
@@ -285,6 +308,7 @@ export default function DebriefsView({ getToken, onUnreadChange }) {
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState(null)
   const [statusTick, setStatusTick] = useState(0)
+  const [reanalysis, setReanalysis] = useState(null) // { id, since, prev } while a re-analysis is running
 
   const api = useCallback((path, options) => apiFetch(path, getToken, options), [getToken])
   const pushUnread = useCallback((l) => onUnreadChange && onUnreadChange((l.unreadIds?.length || 0) + (l.recap?.unread ? 1 : 0)), [onUnreadChange])
@@ -297,6 +321,12 @@ export default function DebriefsView({ getToken, onUnreadChange }) {
     } catch (e) { setError(e.message) }
   }, [api, weeks, pushUnread])
   useEffect(() => { loadList() }, [loadList])
+  // New results appear on their own while you are looking at the list.
+  useEffect(() => {
+    if (mode !== 'calls') return undefined
+    const t = setInterval(loadList, listRefreshMs)
+    return () => clearInterval(t)
+  }, [mode, loadList, listRefreshMs])
 
   const markSeen = useCallback((ids) => {
     api('/api/debriefs/seen', { method: 'POST', body: JSON.stringify({ ids }) }).catch(() => {})
@@ -335,6 +365,34 @@ export default function DebriefsView({ getToken, onUnreadChange }) {
     api('/api/debriefs/status').then((r) => alive && setStatusData(r)).catch((e) => alive && setError(e.message))
     return () => { alive = false }
   }, [mode, statusTick]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startReanalyze = async (record) => {
+    setBusy(true); setNotice(null)
+    try {
+      await api('/api/debriefs/reanalyze', { method: 'POST', body: JSON.stringify({ callId: record.callId }) })
+      setReanalysis({ id: record.callId, since: Date.now(), prev: record.analyzedAt || record.failedAt || null })
+    } catch (e) { setNotice(e.message) } finally { setBusy(false) }
+  }
+  useEffect(() => {
+    if (!reanalysis) return undefined
+    let alive = true
+    const check = async () => {
+      try {
+        const rec = (await api(`/api/debriefs/call/${encodeURIComponent(reanalysis.id)}`)).record
+        const stamp = rec.analyzedAt || rec.failedAt || null
+        if (!alive) return
+        if (stamp && stamp !== reanalysis.prev) {
+          setDetail((cur) => (cur && cur.callId === rec.callId ? rec : cur))
+          loadList(); setReanalysis(null)
+          setNotice(rec.status === 'complete' ? 'Re-analysis finished.' : 'Re-analysis ended with an error. The reason is shown on the call.')
+        } else if (Date.now() - reanalysis.since > 5 * 60e3) {
+          setReanalysis(null); setNotice('Still working. Check back in a minute or two.')
+        }
+      } catch { /* keep trying until the time is up */ }
+    }
+    const t = setInterval(check, refreshMs)
+    return () => { alive = false; clearInterval(t) }
+  }, [reanalysis, api, loadList, refreshMs])
 
   // message is text, or a function of the server's answer
   const post = async (path, body, message) => {
@@ -394,7 +452,7 @@ export default function DebriefsView({ getToken, onUnreadChange }) {
             {!selectedId && <div style={{ ...panel, padding: 18, ...muted }}>Select a call to see its debrief.</div>}
             {selectedId && !detail && !detailError && <div style={muted}>Loading debrief...</div>}
             {detailError && <div style={{ ...panel, padding: 14, color: 'var(--red)', fontSize: 13 }}>{detailError}</div>}
-            {detail && <DebriefDetail record={detail} viewAll={viewAll} busy={busy} onReanalyze={() => post('/api/debriefs/reanalyze', { callId: detail.callId }, 'Queued for re-analysis. Refresh in a minute or two.')} />}
+            {detail && <DebriefDetail record={detail} viewAll={viewAll} busy={busy} reanalyzing={reanalysis?.id === detail.callId} onReanalyze={() => startReanalyze(detail)} />}
           </div>
         </div>
       )}
