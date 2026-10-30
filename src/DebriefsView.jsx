@@ -222,7 +222,7 @@ export function RecapPanel({ data, viewAll, onOpen }) {
   )
 }
 
-function StatusPanel({ data, onBackfill, busy }) {
+function StatusPanel({ data, onBackfill, onPoll, busy, notice }) {
   const c = data.config || {}
   const yes = (v) => <Pill color={v ? '#2E7D4F' : '#A63D40'}>{v ? 'set' : 'MISSING'}</Pill>
   return (
@@ -242,11 +242,27 @@ function StatusPanel({ data, onBackfill, busy }) {
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{Object.entries(data.byStatus).map(([s, n]) => <Pill key={s} color={s === 'failed' ? '#A63D40' : s === 'complete' ? '#2E7D4F' : '#6B7280'}>{s.replace('_', ' ')} {n}</Pill>)}{!Object.keys(data.byStatus).length && <span style={muted}>No calls yet.</span>}</div>
       {data.recentFailures.length > 0 && <><H>Recent failures</H><Table headers={['Call', 'Attempts', 'Reason']} rows={data.recentFailures.map((f) => [f.title || f.callId, f.attempts, f.error])} /></>}
       <div style={{ marginTop: 16 }}>
-        <button disabled={busy} onClick={onBackfill} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>Analyze the past 7 days of calls</button>
-        <div style={{ ...muted, marginTop: 4 }}>Starts a backfill. The poller works through it a few calls every 15 minutes.</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button disabled={busy} onClick={onPoll} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>{busy ? 'Working...' : 'Check Gong now'}</button>
+          <button disabled={busy} onClick={onBackfill} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>Analyze the past 7 days of calls</button>
+        </div>
+        <div style={{ ...muted, marginTop: 4 }}>Both run a check straight away and report what they found. The scheduled check then continues every 15 minutes, three calls at a time.</div>
+        {notice && <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--bg-secondary)', fontSize: 12.5, color: 'var(--text)', overflowWrap: 'anywhere' }}>{notice}</div>}
       </div>
     </div>
   )
+}
+
+// What a "check Gong now" pass found, in plain words.
+export function describePoll(p, lead = '') {
+  const say = (t) => `${lead ? `${lead} ` : ''}${t}`
+  if (!p) return say('Done.')
+  if (p.error) return say(`The check against Gong failed: ${p.error}`)
+  if (p.slow) return say('Gong is taking a while to answer. The scheduled check will pick it up within 15 minutes.')
+  if (p.skipped) return say('A check ran a moment ago, so nothing new was started.')
+  const errs = p.triggerErrors && p.triggerErrors.length ? ` ${p.triggerErrors.length} could not be started: ${p.triggerErrors[0]}` : ''
+  if (!p.waiting) return say(`Gong has ${p.external} calls with an outside participant in that window, and none are waiting to be analyzed.${errs}`)
+  return say(`Found ${p.external} calls with an outside participant. ${p.triggered} started now, ${p.deferred} queued for the next passes (three at a time, every 15 minutes).${errs}`)
 }
 
 export default function DebriefsView({ getToken, onUnreadChange }) {
@@ -264,6 +280,7 @@ export default function DebriefsView({ getToken, onUnreadChange }) {
   const [bandFilter, setBandFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState(null)
+  const [statusTick, setStatusTick] = useState(0)
 
   const api = useCallback((path, options) => apiFetch(path, getToken, options), [getToken])
   const pushUnread = useCallback((l) => onUnreadChange && onUnreadChange((l.unreadIds?.length || 0) + (l.recap?.unread ? 1 : 0)), [onUnreadChange])
@@ -313,11 +330,16 @@ export default function DebriefsView({ getToken, onUnreadChange }) {
     let alive = true
     api('/api/debriefs/status').then((r) => alive && setStatusData(r)).catch((e) => alive && setError(e.message))
     return () => { alive = false }
-  }, [mode]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mode, statusTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // message is text, or a function of the server's answer
   const post = async (path, body, message) => {
     setBusy(true); setNotice(null)
-    try { await api(path, { method: 'POST', body: JSON.stringify(body) }); setNotice(message) } catch (e) { setNotice(e.message) } finally { setBusy(false) }
+    try {
+      const r = await api(path, { method: 'POST', body: JSON.stringify(body) })
+      setNotice(typeof message === 'function' ? message(r) : message)
+      setStatusTick((t) => t + 1)
+    } catch (e) { setNotice(e.message) } finally { setBusy(false) }
   }
 
   const reps = useMemo(() => [...new Set((list?.items || []).map((i) => i.ownerName).filter(Boolean))].sort(), [list])
@@ -355,7 +377,7 @@ export default function DebriefsView({ getToken, onUnreadChange }) {
       </div>
 
       {error && <div style={{ ...panel, padding: 12, color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{error}</div>}
-      {notice && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginBottom: 10 }}>{notice}</div>}
+      {notice && mode !== 'status' && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginBottom: 10 }}>{notice}</div>}
       {!list && !error && <div style={muted}>Loading...</div>}
 
       {list && mode === 'calls' && (
@@ -374,7 +396,7 @@ export default function DebriefsView({ getToken, onUnreadChange }) {
       )}
 
       {list && mode === 'recap' && (recapData ? <RecapPanel data={recapData} viewAll={viewAll} onOpen={openCall} /> : <div style={muted}>Loading recap...</div>)}
-      {list && mode === 'status' && viewAll && (statusData ? <StatusPanel data={statusData} busy={busy} onBackfill={() => post('/api/debriefs/backfill', { days: 7 }, 'Backfill started. Calls from the past 7 days will be analyzed over the next while.')} /> : <div style={muted}>Loading status...</div>)}
+      {list && mode === 'status' && viewAll && (statusData ? <StatusPanel data={statusData} busy={busy} notice={notice} onBackfill={() => post('/api/debriefs/backfill', { days: 7 }, (r) => describePoll(r.poll, 'Backfill saved.'))} onPoll={() => post('/api/debriefs/poll', {}, (r) => describePoll(r.poll))} /> : <div style={muted}>Loading status...</div>)}
     </div>
   )
 }
