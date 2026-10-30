@@ -8,9 +8,10 @@
 import { pollOnce } from './utils/pollCalls.js'
 import { buildStore, buildGong, makeTrigger, debriefConfig } from './utils/debriefDeps.js'
 
-export const handler = async () => {
+export const handler = async (event) => {
   try {
-    const result = await pollOnce({ gong: buildGong(), store: buildStore(), trigger: makeTrigger(), config: debriefConfig() })
+    const caller = (event && event.headers && (event.headers['user-agent'] || event.headers['User-Agent'])) || ''
+    const result = await pollOnce({ gong: buildGong(), store: buildStore(), trigger: makeTrigger(), config: debriefConfig(), caller })
     console.log('[gong-poll]', JSON.stringify(result))
   } catch (err) {
     console.error('[gong-poll] failed:', err.message)

@@ -43,7 +43,7 @@ export function createHandler(getDeps) {
       if (!poll) return { error: 'The poller is not available.' }
       let timer
       const tooSlow = new Promise((resolve) => { timer = setTimeout(() => resolve({ slow: true }), pollTimeoutMs) })
-      try { return await Promise.race([poll({ force: true }), tooSlow]) }
+      try { return await Promise.race([poll({ force: true, caller: 'admin button' }), tooSlow]) }
       catch (err) { return { error: err.message } }
       finally { clearTimeout(timer) }
     }
@@ -110,7 +110,7 @@ export function createHandler(getDeps) {
           all.forEach((s) => { byStatus[s.status] = (byStatus[s.status] || 0) + 1 })
           return json(200, {
             config: health ? health() : {},
-            poll: { lastPollAt: state.lastPollAt || null, lastPollError: state.lastPollError || null, counts: state.lastPollCounts || null, lowWater: state.lowWater || null, backfillFrom: state.backfillFrom || null, waitingOnTranscript: Object.keys(state.pending || {}).length },
+            poll: { lastPollAt: state.lastPollAt || null, lastPollError: state.lastPollError || null, counts: state.lastPollCounts || null, lowWater: state.lowWater || null, backfillFrom: state.backfillFrom || null, waitingOnTranscript: Object.keys(state.pending || {}).length, ticks: state.ticks || [] },
             byStatus,
             recentFailures: all.filter((s) => s.status === 'failed').sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 10).map((s) => ({ callId: s.callId, title: s.title, error: s.error, attempts: s.attempts, updatedAt: s.updatedAt })),
           })
