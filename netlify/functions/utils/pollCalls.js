@@ -17,7 +17,7 @@ const HOUR = 3600e3
 const DAY = 24 * HOUR
 const MAX_FAILURES = 3
 
-export async function pollOnce({ gong, store, trigger, now = () => new Date(), config = {}, force = false }) {
+export async function pollOnce({ gong, store, trigger, now = () => new Date(), config = {}, force = false, caller = '' }) {
   const maxPerRun = config.maxPerRun ?? 5
   const nowMs = now().getTime()
   const state = await store.getState()
@@ -25,6 +25,12 @@ export async function pollOnce({ gong, store, trigger, now = () => new Date(), c
   // Netlify lets anyone who knows a scheduled function's URL run it. So a pass that follows another
   // within a few minutes does nothing, which caps outside abuse at roughly the normal schedule.
   // The admin "run now" button passes force and skips this.
+  // Note who asked, even if this pass then does nothing, so the Status screen can show whether Netlify's
+  // scheduler is really calling in. At most one note per 30 seconds, the last eight kept.
+  const lastTick = state.ticks && state.ticks[0]
+  if (!lastTick || nowMs - Date.parse(lastTick.at) > 30e3) {
+    await store.updateState((s) => ({ ...s, ticks: [{ at: new Date(nowMs).toISOString(), caller: String(caller).slice(0, 60) }, ...(s.ticks || [])].slice(0, 8) }))
+  }
   const minGap = config.minIntervalMs ?? 10 * 60e3
   if (!force && state.lastPollAt && nowMs - Date.parse(state.lastPollAt) < minGap) return { skipped: 'ran_recently', lastPollAt: state.lastPollAt }
 

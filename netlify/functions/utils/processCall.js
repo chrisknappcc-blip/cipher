@@ -81,6 +81,8 @@ export async function processCall({ callId, force = false, deps }) {
       // One repair attempt, telling the model exactly what was wrong.
       const retry = structuredClone(request)
       retry.messages[0].content += `\n\nIMPORTANT: your previous attempt was rejected because: ${problems.join(' ')} Call the record_debrief tool with a complete debrief.`
+      // If the model ran out of room, give the retry more (up to 64000) rather than hitting the same wall.
+      if (run.stop === 'max_tokens') retry.max_tokens = Math.min(64000, Math.round(request.max_tokens * 1.5))
       raw = await ask(retry)
       problems = cd.validateAnalysis(raw)
     }
