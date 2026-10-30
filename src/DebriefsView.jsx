@@ -16,6 +16,8 @@ const BAND = { High: '#2E7D4F', Medium: '#B7791F', Low: '#C2410C', 'Very low': '
 const bandColor = (b) => BAND[b] || 'var(--text-tertiary)'
 const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { timeZone: ET, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '')
 const fmtWeek = (wk) => new Date(`${wk}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
+// Same rule as the server's shortOrgName (kept free of regex lookbehind for older Safari).
+const shortOrg = (v) => { let cut = String(v || '').trim().split(/\s\(/)[0].trim(); if (cut.length > 60) { const first = cut.split(/[.;]\s/)[0].trim(); if (first.length >= 4) cut = first } return cut.length > 60 ? `${cut.slice(0, 57).trimEnd()}...` : cut }
 const mins = (sec) => (sec ? `${Math.round(sec / 60)} min` : '')
 
 const panel = { background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)' }
@@ -88,12 +90,14 @@ export function CallCard({ item, selected, unread, onClick }) {
 export function DebriefDetail({ record, viewAll, onReanalyze, busy }) {
   const g = record.gong || {}
   const a = record.analysis
-  const title = a?.prospect?.organization || g.title || 'Call debrief'
+  const fullOrg = a?.prospect?.organization || ''
+  const title = shortOrg(fullOrg) || g.title || 'Call debrief'
   return (
     <div className="debrief-print-area" style={{ ...panel, padding: '16px 18px' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 220 }}>
           <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text)', overflowWrap: 'anywhere' }}>{title}</div>
+          {fullOrg && fullOrg !== title && <div style={{ ...muted, marginTop: 2, overflowWrap: 'anywhere' }}>{fullOrg}</div>}
           <div style={{ ...muted, marginTop: 3 }}>
             {[a?.prospect?.callTopic, fmtWhen(g.started), mins(g.durationSec), record.ownerName && `Rep: ${record.ownerName}`].filter(Boolean).join(' · ')}
           </div>
