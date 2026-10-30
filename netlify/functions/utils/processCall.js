@@ -66,8 +66,10 @@ export async function processCall({ callId, force = false, deps }) {
 
     const request = cd.buildAnalysisRequest({ model: config.model, meta, parties, transcriptText: fmt.text })
     const usage = { input_tokens: 0, output_tokens: 0 }
+    const run = { stop: null }
     const ask = async (req) => {
       const resp = await claude(req)
+      run.stop = resp?.stop_reason || null
       usage.input_tokens += resp?.usage?.input_tokens || 0
       usage.output_tokens += resp?.usage?.output_tokens || 0
       return cd.extractToolInput(resp)
@@ -78,11 +80,11 @@ export async function processCall({ callId, force = false, deps }) {
     if (problems.length) {
       // One repair attempt, telling the model exactly what was wrong.
       const retry = structuredClone(request)
-      retry.messages[0].content += `\n\nIMPORTANT: your previous attempt was rejected because: ${problems.join(' ')} Produce a complete debrief.`
+      retry.messages[0].content += `\n\nIMPORTANT: your previous attempt was rejected because: ${problems.join(' ')} Call the record_debrief tool with a complete debrief.`
       raw = await ask(retry)
       problems = cd.validateAnalysis(raw)
     }
-    if (problems.length) throw new Error(`The analysis came back incomplete: ${problems.join(' ')}`)
+    if (problems.length) throw new Error(`The analysis came back incomplete${run.stop === 'max_tokens' ? ' (the model hit its length limit)' : ''}: ${problems.join(' ')}`)
 
     const analysis = cd.normalizeAnalysis(raw)
     const engagement = cd.scoreEngagement(analysis.engagement.factors)

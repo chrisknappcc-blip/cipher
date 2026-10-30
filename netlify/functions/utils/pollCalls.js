@@ -17,10 +17,16 @@ const HOUR = 3600e3
 const DAY = 24 * HOUR
 const MAX_FAILURES = 3
 
-export async function pollOnce({ gong, store, trigger, now = () => new Date(), config = {} }) {
+export async function pollOnce({ gong, store, trigger, now = () => new Date(), config = {}, force = false }) {
   const maxPerRun = config.maxPerRun ?? 5
   const nowMs = now().getTime()
   const state = await store.getState()
+
+  // Netlify lets anyone who knows a scheduled function's URL run it. So a pass that follows another
+  // within a few minutes does nothing, which caps outside abuse at roughly the normal schedule.
+  // The admin "run now" button passes force and skips this.
+  const minGap = config.minIntervalMs ?? 10 * 60e3
+  if (!force && state.lastPollAt && nowMs - Date.parse(state.lastPollAt) < minGap) return { skipped: 'ran_recently', lastPollAt: state.lastPollAt }
 
   let fromMs
   if (state.backfillFrom) fromMs = Date.parse(state.backfillFrom)
@@ -57,7 +63,7 @@ export async function pollOnce({ gong, store, trigger, now = () => new Date(), c
   }
 
   const waiting = external.filter((c) => !resolved(c.id)).sort((a, b) => a.started - b.started)
-  const ready = waiting.filter((c) => !tooSoon(c.id))
+  const ready = waiting.filter((c) => force || !tooSoon(c.id))
   const batch = ready.slice(0, maxPerRun)
   const results = await Promise.allSettled(batch.map((c) => trigger(c.id)))
   const triggerErrors = results.filter((r) => r.status === 'rejected').map((r) => String(r.reason?.message || r.reason))

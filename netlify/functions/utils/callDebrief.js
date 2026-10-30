@@ -205,7 +205,7 @@ export const DEBRIEF_TOOL = {
 
 const MAX_TRANSCRIPT_CHARS = 450000 // roughly 100k tokens; a normal hour long call is a tenth of this
 
-export function buildAnalysisRequest({ model, maxTokens = 12000, meta, parties, transcriptText }) {
+export function buildAnalysisRequest({ model, maxTokens = 16000, meta, parties, transcriptText }) {
   const names = (list) => list.map((p) => p.name || p.email).filter(Boolean).join(', ') || 'not listed'
   const prospects = parties.external.concat(parties.unknown).map((p) => `${p.name || p.email || 'unnamed'}${p.title ? `, ${p.title}` : ''}`).join('; ') || 'not listed'
   let transcript = transcriptText
@@ -224,13 +224,17 @@ export function buildAnalysisRequest({ model, maxTokens = 12000, meta, parties, 
     '',
     'TRANSCRIPT',
     transcript,
+    '',
+    'Now call the record_debrief tool with the complete debrief.',
   ].join('\n')
   return {
     model,
     max_tokens: maxTokens,
     system: SYSTEM_PROMPT,
+    // The tool is offered but not forced: some models (claude-sonnet-5-5 among them) reject a
+    // forced tool choice with a 400. The prompt tells the model to answer only by calling it,
+    // and processCall retries once if it does not.
     tools: [DEBRIEF_TOOL],
-    tool_choice: { type: 'tool', name: DEBRIEF_TOOL.name },
     messages: [{ role: 'user', content: user }],
   }
 }
@@ -289,7 +293,8 @@ export function normalizeAnalysis(raw) {
 // truly depends on are required, so a slightly thin answer is stored, not thrown away.
 export function validateAnalysis(raw) {
   const problems = []
-  if (!raw || typeof raw !== 'object') return ['The response was not an object.']
+  if (!raw) return ['You did not call the record_debrief tool.']
+  if (typeof raw !== 'object') return ['The response was not an object.']
   if (!s(o(raw.sentiment).verdict).trim()) problems.push('sentiment.verdict is missing.')
   if (!s(o(raw.prospect).organization).trim()) problems.push('prospect.organization is missing.')
   const keys = new Set(a(o(raw.engagement).factors).map((f) => f?.key))

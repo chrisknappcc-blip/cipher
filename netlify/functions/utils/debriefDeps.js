@@ -6,6 +6,7 @@
 import { createDebriefStore } from './debriefStore.js'
 import { createGongClient } from './gongClient.js'
 import { makeClaudeCaller } from './anthropic.js'
+import { pollOnce } from './pollCalls.js'
 
 export const debriefConfig = (env = process.env) => ({
   model: env.DEBRIEF_MODEL || 'claude-sonnet-5-5',
@@ -44,6 +45,12 @@ export function makeTrigger(env = process.env, fetchImpl = fetch) {
     if (!res.ok) throw new Error(`The background job rejected the request (${res.status}).`)
   }
 }
+
+// One pass of the poller with the real Gong, storage and background job. The admin API uses this
+// for "run now"; options such as { force: true } pass straight through.
+export const buildPoll = (env = process.env, fetchImpl = fetch) => (opts = {}) => pollOnce({
+  gong: buildGong(env), store: buildStore(env), trigger: makeTrigger(env, fetchImpl), config: debriefConfig(env), ...opts,
+})
 
 // Which settings are present, as yes or no, for the status view. Never the values.
 export const configHealth = (env = process.env) => ({
