@@ -144,6 +144,7 @@ GROUND RULES
 - Transcripts misattribute lines and garble names and words (for example "Care Count Moody" for ${OUR_COMPANY}). Use context to decide who most likely spoke. Where it matters, record the likely error in transcriptNotes instead of repeating it as fact. Do not "correct" a name or title beyond flagging a likely error.
 - Every quote, flag and stakeholder needs who said it and an approximate time in m:ss, taken from the line labels.
 - Be concrete and brief. Short quotes are better than paraphrase when the wording matters.
+- prospect.organization is the organization's SHORT NAME only, a few words such as "Mercy Health". If you are unsure of the name, give your best short name and put the doubt in callTopic or transcriptNotes. prospect.callTopic is one sentence.
 
 WHAT TO CAPTURE
 1. attendees: every prospect side person (name, title or role as they stated it, anything notable about how they took part, and whether they spoke). absentInvitees: people invited or mentioned who did not attend, with any reason given. Include attendees who joined but never spoke.
@@ -175,7 +176,7 @@ export const DEBRIEF_TOOL = {
   name: 'record_debrief',
   description: 'Record the structured debrief of the call.',
   input_schema: obj({
-    prospect: obj({ organization: str, callTopic: str }),
+    prospect: obj({ organization: { type: 'string', description: 'Short name only, six words at most. No explanation or caveats.' }, callTopic: { type: 'string', description: 'One sentence.' } }),
     glance: strArr,
     attendees: list({ name: str, role: str, notes: str, spoke: { type: 'boolean' } }),
     absentInvitees: list({ name: str, role: str, reason: str }),
@@ -205,7 +206,7 @@ export const DEBRIEF_TOOL = {
 
 const MAX_TRANSCRIPT_CHARS = 450000 // roughly 100k tokens; a normal hour long call is a tenth of this
 
-export function buildAnalysisRequest({ model, maxTokens = 16000, meta, parties, transcriptText }) {
+export function buildAnalysisRequest({ model, maxTokens = 32000, meta, parties, transcriptText }) {
   const names = (list) => list.map((p) => p.name || p.email).filter(Boolean).join(', ') || 'not listed'
   const prospects = parties.external.concat(parties.unknown).map((p) => `${p.name || p.email || 'unnamed'}${p.title ? `, ${p.title}` : ''}`).join('; ') || 'not listed'
   let transcript = transcriptText
@@ -303,6 +304,18 @@ export function validateAnalysis(raw) {
   return problems
 }
 
+// A short display name. Drops a parenthetical ("Mercy Health (as titled in the call...)" becomes "Mercy Health"),
+// and only if the text is still long does it cut at the first sentence, so a real name such as
+// "St. Luke's Health System" is never chopped at its "St.".
+export function shortOrgName(value) {
+  let cut = String(value || '').trim().split(/\s\(/)[0].trim()
+  if (cut.length > 60) {
+    const first = cut.split(/[.;]\s/)[0].trim()
+    if (first.length >= 4) cut = first
+  }
+  return cut.length > 60 ? `${cut.slice(0, 57).trimEnd()}...` : cut
+}
+
 // ─── Summaries (what lists and recaps read, so they never load full records) ─
 const DONE = new Set(['complete', 'too_short', 'no_transcript', 'skipped'])
 export const isDoneStatus = (status) => DONE.has(status)
@@ -322,7 +335,7 @@ export function summarizeRecord(rec) {
     participantEmails: rec.participantEmails || [],
     externalNames: (rec.external || []).map((p) => p.name || p.email).filter(Boolean),
     externalEmails: (rec.external || []).map((p) => p.email).filter(Boolean),
-    organization: an?.prospect.organization || '',
+    organization: shortOrgName(an?.prospect.organization),
     topic: an?.prospect.callTopic || '',
     engagement: rec.engagement ? { score: rec.engagement.score, band: rec.engagement.band } : null,
     verdict: an?.sentiment.verdict || '',
