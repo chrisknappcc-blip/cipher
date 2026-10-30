@@ -8,7 +8,7 @@
 
 import { withAuth } from './utils/auth.js'
 import * as cd from './utils/callDebrief.js'
-import { buildStore, makeTrigger, configHealth } from './utils/debriefDeps.js'
+import { buildStore, makeTrigger, configHealth, buildPoll } from './utils/debriefDeps.js'
 
 const DAY = 24 * 3600e3
 const json = (statusCode, body) => ({ statusCode, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(body) })
@@ -18,7 +18,7 @@ const SEEN_RE = /^(recap:\d{4}-\d{2}-\d{2}|[0-9A-Za-z_-]{1,40})$/
 
 export function createHandler(getDeps) {
   return async (event, context) => withAuth(async (event, _ctx, user) => {
-    const { store, viewAllSet, trigger, health, now = () => new Date() } = getDeps()
+    const { store, viewAllSet, trigger, health, poll, pollTimeoutMs = 8500, now = () => new Date() } = getDeps()
     const email = String(user.email || '').toLowerCase()
     const viewAll = viewAllSet.has(email)
     const method = event.httpMethod
@@ -36,6 +36,18 @@ export function createHandler(getDeps) {
       const lists = await Promise.all(keys.map((k) => store.getIndex(k)))
       return { keys, byWeek: Object.fromEntries(keys.map((k, i) => [k, visible(lists[i])])) }
     }
+    // Runs the poller right now (admin only) and reports what it found, so the button gives an answer
+    // instead of waiting for the next 15 minute tick. Kept short of the function time limit; if Gong is
+    // slow the scheduled run carries on from where this left off.
+    async function runPollNow() {
+      if (!poll) return { error: 'The poller is not available.' }
+      let timer
+      const tooSlow = new Promise((resolve) => { timer = setTimeout(() => resolve({ slow: true }), pollTimeoutMs) })
+      try { return await Promise.race([poll({ force: true }), tooSlow]) }
+      catch (err) { return { error: err.message } }
+      finally { clearTimeout(timer) }
+    }
+
     // The most recent week whose recap has been released (this week after Friday 4pm, else last week).
     const latestReleased = () => (now().getTime() >= cd.weekReleaseAt(currentWeek).getTime() ? currentWeek : cd.prevWeekStart(currentWeek))
 
@@ -87,7 +99,7 @@ export function createHandler(getDeps) {
       }
 
       // Everything below is for people who can see everything.
-      if (['/status', '/backfill', '/reanalyze'].includes(path)) {
+      if (['/status', '/backfill', '/reanalyze', '/poll'].includes(path)) {
         if (!viewAll) return json(403, { error: 'Not allowed.' })
 
         if (method === 'GET' && path === '/status') {
@@ -106,8 +118,9 @@ export function createHandler(getDeps) {
         if (method === 'POST' && path === '/backfill') {
           const days = Math.min(60, Math.max(1, parseInt(body().days, 10) || 7))
           await store.updateState((s) => ({ ...s, backfillFrom: new Date(now().getTime() - days * DAY).toISOString() }))
-          return json(200, { ok: true, days })
+          return json(200, { ok: true, days, poll: await runPollNow() })
         }
+        if (method === 'POST' && path === '/poll') return json(200, { ok: true, poll: await runPollNow() })
         if (method === 'POST' && path === '/reanalyze') {
           const callId = String(body().callId || '')
           if (!CALL_RE.test(callId)) return json(400, { error: 'A valid callId is required.' })
@@ -127,5 +140,6 @@ export const handler = createHandler(() => ({
   store: buildStore(),
   viewAllSet: cd.parseViewAll(process.env.DEBRIEF_VIEW_ALL_EMAILS),
   trigger: makeTrigger(),
+  poll: buildPoll(),
   health: () => configHealth(),
 }))
