@@ -1,6 +1,6 @@
 // netlify/functions/utils/gongClient.js
 //
-// Thin client for the three Gong endpoints the call debrief uses. Auth is HTTP
+// Thin client for the Gong endpoints the call debrief uses (calls, transcripts, and the list of people). Auth is HTTP
 // Basic with the Access Key as the username and the Access Key Secret as the
 // password; the base URL is specific to your Gong workspace (shown on Gong's
 // API page, for example https://company-17.api.gong.io).
@@ -34,12 +34,13 @@ export function createGongClient({
   const base = String(baseUrl).trim().replace(/\/+$/, '')
   const auth = 'Basic ' + Buffer.from(`${accessKey}:${secret}`).toString('base64')
 
-  async function post(path, body) {
+  async function request(method, path, body, query) {
+    const qs = query ? `?${new URLSearchParams(query).toString()}` : ''
     for (let attempt = 0; ; attempt++) {
-      const res = await fetchImpl(`${base}${path}`, {
-        method: 'POST',
-        headers: { Authorization: auth, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      const res = await fetchImpl(`${base}${path}${qs}`, {
+        method,
+        headers: method === 'GET' ? { Authorization: auth } : { Authorization: auth, 'Content-Type': 'application/json' },
+        ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
       })
       if (res.status === 429 && attempt < maxRetries) {
         const hinted = Number(res.headers?.get?.('retry-after'))
@@ -51,10 +52,11 @@ export function createGongClient({
       // Gong answers 404 when a query simply matches nothing. Only treat that as
       // empty when the body says so, so a wrong base URL fails loudly instead of
       // quietly returning "no calls".
-      if (res.status === 404 && /no calls found/i.test(text)) return null
+      if (res.status === 404 && /no (calls|users) found/i.test(text)) return null
       throw new GongError(res.status, friendly(res.status, text))
     }
   }
+  const post = (path, body) => request('POST', path, body)
 
   const PARTIES = { exposedFields: { parties: true } } // without this Gong omits the participants entirely
 
@@ -73,6 +75,25 @@ export function createGongClient({
         if (!cursor) break
       }
       return calls
+    },
+
+    // Everyone in the Gong workspace (not just people who hosted a call): name, email, and whether they are active.
+    // Used so the rep list does not depend on who happened to host a call this week. 100 per page.
+    async listUsers({ maxPages = 20 } = {}) {
+      const users = []
+      let cursor
+      for (let page = 0; page < maxPages; page++) {
+        const data = await request('GET', '/v2/users', null, cursor ? { cursor } : undefined)
+        if (!data) break
+        for (const u of data.users || []) {
+          const email = String(u.emailAddress || '').trim().toLowerCase()
+          const name = [u.firstName, u.lastName].filter(Boolean).join(' ').trim()
+          if (email || name) users.push({ id: u.id != null ? String(u.id) : '', email, name, active: u.active !== false, title: u.title || '' })
+        }
+        cursor = data.records?.cursor || data.cursor
+        if (!cursor) break
+      }
+      return users
     },
 
     async getCall(callId) {

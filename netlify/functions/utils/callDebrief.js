@@ -11,11 +11,27 @@ export const PROMPT_VERSION = 'v1-2026-10'
 const ET = 'America/New_York'
 
 // ─── Which calls count ──────────────────────────────────────────────────────
-// Any call with an external participant. Checked per participant, not just on
-// Gong's call level scope, so a call is never missed because of how it was tagged.
-export function isExternalCall(call) {
+// What kind of call this is, from who was on it:
+//   external        Gong says someone outside the company was on it
+//   likely_external one of ours plus someone Gong could not classify (typically a phone number or an address
+//                   it could not match), and Gong did not call it internal. Before this existed, such calls
+//                   were dropped, which hid most phone calls to prospects.
+//   internal        only our own people
+//   no_internal     nobody of ours on the list (nothing to attribute it to)
+export function callKind(call) {
   const parties = call?.parties || []
-  return call?.metaData?.scope === 'External' || parties.some((p) => p.affiliation === 'External')
+  const scope = call?.metaData?.scope
+  if (scope === 'External' || parties.some((p) => p.affiliation === 'External')) return 'external'
+  const ours = parties.some((p) => p.affiliation === 'Internal')
+  const unclassified = parties.some((p) => p.affiliation !== 'Internal' && p.affiliation !== 'External')
+  if (ours && unclassified && scope !== 'Internal') return 'likely_external'
+  return ours ? 'internal' : 'no_internal'
+}
+// A call worth analyzing: external, or likely external. Checked per participant, not just on Gong's call
+// level scope, so a call is never missed because of how it was tagged.
+export function isExternalCall(call) {
+  const k = callKind(call)
+  return k === 'external' || k === 'likely_external'
 }
 
 export function splitParties(parties = []) {
@@ -335,6 +351,7 @@ export function summarizeRecord(rec) {
     participantEmails: rec.participantEmails || [],
     externalNames: (rec.external || []).map((p) => p.name || p.email).filter(Boolean),
     externalEmails: (rec.external || []).map((p) => p.email).filter(Boolean),
+    callKind: rec.callKind || null,
     organization: shortOrgName(an?.prospect.organization),
     topic: an?.prospect.callTopic || '',
     engagement: rec.engagement ? { score: rec.engagement.score, band: rec.engagement.band } : null,
@@ -438,4 +455,77 @@ export function buildRecap({ summaries, weekStart, now = new Date(), viewAll = f
     recap.byRep = [...reps.values()].map((r) => ({ ownerName: r.ownerName, ownerEmail: r.ownerEmail, calls: r.calls, avgEngagement: r.scored ? Math.round(r.scoreSum / r.scored) : null, owedCount: r.owedCount })).sort((x, y) => y.calls - x.calls)
   }
   return recap
+}
+
+// ─── Reps, for the dropdown ─────────────────────────────────────────────────
+const repKey = (email, name) => String(email || name || '').toLowerCase()
+export const repKeyOf = (item) => repKey(item && item.ownerEmail, item && item.ownerName)
+
+// Adds the hosts of calls seen in one pass to what was seen before (kept small, newest first).
+export function mergeRepsSeen(prev = {}, hosts = []) {
+  const out = { ...prev }
+  for (const h of hosts) {
+    const key = repKey(h.email, h.name)
+    if (!key) continue
+    const cur = out[key] || {}
+    out[key] = { name: h.name || cur.name || '', email: h.email || cur.email || '', lastCall: [cur.lastCall, h.lastCall].filter(Boolean).sort().pop() || null }
+  }
+  const keep = Object.entries(out).sort((a, b) => String(b[1].lastCall).localeCompare(String(a[1].lastCall))).slice(0, 150)
+  return Object.fromEntries(keep)
+}
+
+// Everyone who should be in the rep dropdown: every active person Gong lists, people Gong showed us with an outside
+// call, and anyone who owns a call in the list. Each has how many calls and how many analyzed calls are in what is on screen (zero is fine:
+// seeing a rep with none is the point).
+export function buildRepList(repsSeen = {}, items = [], users = []) {
+  const reps = new Map()
+  const add = (key, name, email) => { if (key && !reps.has(key)) reps.set(key, { key, name: name || email || key, email: email || '', calls: 0, analyzed: 0 }) }
+  // Everyone Gong lists as an active person, so the list does not depend on who hosted a call this week.
+  for (const u of users || []) if (u && u.active !== false && (u.email || u.name)) add(repKey(u.email, u.name), u.name, u.email)
+  for (const r of Object.values(repsSeen)) add(repKey(r.email, r.name), r.name, r.email)
+  for (const i of items) {
+    const key = repKeyOf(i)
+    if (!key) continue
+    add(key, i.ownerName, i.ownerEmail)
+    const r = reps.get(key); r.calls++; if (i.status === 'complete') r.analyzed++
+    if (!r.name && i.ownerName) r.name = i.ownerName
+  }
+  return [...reps.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)))
+}
+
+// ─── Coverage check: what Gong has versus what Cipher pulled in ─────────────
+export const EST_COST_PER_CALL = 0.17 // dollars, from the first real debriefs; an estimate, not a quote
+const WAITING = (r) => (r.kind === 'external' || r.kind === 'likely_external') && !['complete', 'too_short', 'no_transcript', 'skipped'].includes(r.status)
+// rows: [{ id, started, host: { name, email }, title, kind, status }] where status is what Cipher has stored (or null)
+export function affiliationCounts(parties = []) {
+  const out = { internal: 0, external: 0, unknown: 0 }
+  for (const p of parties || []) { const a = p && p.affiliation; out[a === 'Internal' ? 'internal' : a === 'External' ? 'external' : 'unknown']++ }
+  return out
+}
+// users: everyone Gong lists (or null if that could not be read). Active people with no call at all in the rows are
+// reported as noCalls, so a person who should have calls but has none is visible.
+export function buildCoverage(rows, users = null) {
+  const hosts = new Map()
+  const totals = { calls: 0, outside: 0, likely: 0, internal: 0, analyzed: 0, tooShort: 0, noTranscript: 0, failed: 0, waiting: 0 }
+  const skippedExamples = []
+  for (const r of rows) {
+    const key = repKey(r.host && r.host.email, r.host && r.host.name) || 'unknown'
+    if (!hosts.has(key)) hosts.set(key, { name: (r.host && r.host.name) || (r.host && r.host.email) || 'No host listed', email: (r.host && r.host.email) || '', calls: 0, outside: 0, likely: 0, internal: 0, analyzed: 0, tooShort: 0, noTranscript: 0, failed: 0, waiting: 0 })
+    const h = hosts.get(key)
+    const bump = (field) => { h[field]++; totals[field]++ }
+    bump('calls')
+    if (r.kind === 'external') bump('outside'); else if (r.kind === 'likely_external') bump('likely'); else bump('internal')
+    if (r.status === 'complete') bump('analyzed')
+    if (r.status === 'too_short') bump('tooShort')
+    if (r.status === 'no_transcript') bump('noTranscript')
+    if (r.status === 'failed') bump('failed')
+    if (WAITING(r)) bump('waiting')
+    if (r.kind !== 'external' && r.kind !== 'likely_external') skippedExamples.push({ title: r.title || 'Untitled call', host: (r.host && (r.host.name || r.host.email)) || 'No host listed', started: r.started, kind: r.kind, scope: r.scope || null, labels: r.labels || null })
+  }
+  const noCalls = users ? users.filter((u) => u && u.active !== false && (u.email || u.name) && !hosts.has(repKey(u.email, u.name))).map((u) => ({ name: u.name || u.email, email: u.email || '' })).sort((a, b) => a.name.localeCompare(b.name)).slice(0, 80) : null
+  return {
+    totals, noCalls, estimatedCost: Math.round(totals.waiting * EST_COST_PER_CALL * 100) / 100,
+    byHost: [...hosts.values()].sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name)),
+    skippedExamples: skippedExamples.sort((a, b) => String(b.started).localeCompare(String(a.started))).slice(0, 25),
+  }
 }

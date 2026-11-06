@@ -49,6 +49,7 @@ export async function processCall({ callId, force = false, deps }) {
       gong: { title: meta.title, started: meta.startedIso, durationSec: meta.durationSec, url: meta.url, scope: meta.scope },
       ownerName, ownerEmail,
       participantEmails: [...new Set(parties.internal.map((p) => p.email).filter(Boolean))],
+      callKind: cd.callKind(call),
       internal: parties.internal.map(person),
       external: parties.external.concat(parties.unknown).map(person),
       promptVersion: cd.PROMPT_VERSION,

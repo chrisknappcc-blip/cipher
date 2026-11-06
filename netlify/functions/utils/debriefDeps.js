@@ -13,7 +13,8 @@ export const debriefConfig = (env = process.env) => ({
   minWords: 120,
   minProspectWords: 15,
   maxPerRun: 3, // Gong allows 3 concurrent requests per workspace
-  initialLookbackDays: Number(env.GONG_BACKFILL_DAYS) || 2,
+  initialLookbackDays: Number(env.GONG_BACKFILL_DAYS) || 2, // kept for older settings; passes now always look back rescanDays
+  rescanDays: Math.min(14, Math.max(1, Number(env.GONG_RESCAN_DAYS) || 7)), // how far every pass re-reads, to catch calls that appear late
 })
 
 export const buildStore = (env = process.env) => createDebriefStore({

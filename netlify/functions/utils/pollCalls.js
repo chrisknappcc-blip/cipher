@@ -4,8 +4,9 @@
 // external participant, and hand the ones not yet analyzed to the background job.
 //
 // Care is taken that nothing falls through the cracks:
-//  - each pass re-reads a few hours back, so a call that was still processing
-//    in Gong last time is seen again;
+//  - every pass re-reads the last several days (default 7), not just a few hours. Gong lists a call by when it
+//    STARTED, and a call can show up in the list hours later (processing, or a phone system syncing late), so a
+//    short look back lets those slip past for good. Calls already analyzed cost nothing to re-read;
 //  - if there are more waiting than one pass should start (to stay inside Gong's
 //    rate limit), the window stays anchored at the oldest waiting call instead
 //    of moving forward past it;
@@ -34,10 +35,9 @@ export async function pollOnce({ gong, store, trigger, now = () => new Date(), c
   const minGap = config.minIntervalMs ?? 10 * 60e3
   if (!force && state.lastPollAt && nowMs - Date.parse(state.lastPollAt) < minGap) return { skipped: 'ran_recently', lastPollAt: state.lastPollAt }
 
-  let fromMs
-  if (state.backfillFrom) fromMs = Date.parse(state.backfillFrom)
-  else if (state.lastPolledTo) fromMs = Math.min(Date.parse(state.lastPolledTo) - 3 * HOUR, state.lowWater ? Date.parse(state.lowWater) : Infinity)
-  else fromMs = nowMs - (config.initialLookbackDays ?? 2) * DAY
+  let fromMs = nowMs - (config.rescanDays ?? 7) * DAY
+  if (state.backfillFrom) fromMs = Math.min(fromMs, Date.parse(state.backfillFrom))
+  if (state.lowWater) fromMs = Math.min(fromMs, Date.parse(state.lowWater))
   fromMs = Math.max(fromMs, nowMs - (state.backfillFrom ? 60 : 14) * DAY)
 
   let calls
@@ -46,6 +46,20 @@ export async function pollOnce({ gong, store, trigger, now = () => new Date(), c
   } catch (err) {
     await store.updateState((s) => ({ ...s, lastPollAt: now().toISOString(), lastPollError: err.message }))
     throw err
+  }
+
+  // Who hosted the calls that have an outside side to them, so the rep list can show people even before one of
+  // their calls has been analyzed (and shows who is missing if some never are).
+  const hostMap = new Map()
+  for (const c of calls) {
+    const kind = cd.callKind(c)
+    if (kind !== 'external' && kind !== 'likely_external') continue
+    const o = cd.ownerOf(cd.callMeta(c), cd.splitParties(c.parties || []))
+    const key = String(o.ownerEmail || o.ownerName || '').toLowerCase()
+    if (!key) continue
+    const at = c.metaData?.started || null
+    const cur = hostMap.get(key)
+    if (!cur) hostMap.set(key, { name: o.ownerName, email: o.ownerEmail, lastCall: at }); else if (at && (!cur.lastCall || at > cur.lastCall)) cur.lastCall = at
   }
 
   const external = calls
@@ -74,10 +88,21 @@ export async function pollOnce({ gong, store, trigger, now = () => new Date(), c
   const results = await Promise.allSettled(batch.map((c) => trigger(c.id)))
   const triggerErrors = results.filter((r) => r.status === 'rejected').map((r) => String(r.reason?.message || r.reason))
 
+  // The list of everyone in Gong, twice a day: a couple of requests, so the rep list can include people who have not
+  // hosted a call lately. If Gong refuses (the key may not allow it), say so on Status and carry on; retry in an hour.
+  let peopleUpdate = {}
+  const peopleAge = state.usersFetchedAt ? nowMs - Date.parse(state.usersFetchedAt) : Infinity
+  if (peopleAge > (config.usersRefreshMs ?? 12 * HOUR) && typeof gong.listUsers === 'function') {
+    try {
+      const list = await gong.listUsers()
+      peopleUpdate = { users: list.slice(0, 600).map(({ name, email, active }) => ({ name, email, active })), usersFetchedAt: new Date(nowMs).toISOString(), usersError: null }
+    } catch (err) { peopleUpdate = { usersError: String(err.message || err).slice(0, 200), usersFetchedAt: new Date(nowMs - 11 * HOUR).toISOString() } }
+  }
+
   const lowWater = waiting.length ? new Date(Math.min(...waiting.map((c) => c.started))).toISOString() : null
-  const counts = { listed: calls.length, external: external.length, waiting: waiting.length, triggered: batch.length - triggerErrors.length, deferred: Math.max(0, ready.length - batch.length) }
+  const counts = { listed: calls.length, external: external.length, likely: calls.filter((c) => cd.callKind(c) === 'likely_external').length, waiting: waiting.length, triggered: batch.length - triggerErrors.length, deferred: Math.max(0, ready.length - batch.length) }
   await store.updateState((s) => {
-    const next = { ...s, lastPolledTo: new Date(nowMs).toISOString(), lowWater, lastPollAt: now().toISOString(), lastPollError: triggerErrors[0] || null, lastPollCounts: counts }
+    const next = { ...s, ...peopleUpdate, repsSeen: cd.mergeRepsSeen(s.repsSeen, [...hostMap.values()]), lastPolledTo: new Date(nowMs).toISOString(), lowWater, lastPollAt: now().toISOString(), lastPollError: triggerErrors[0] || null, lastPollCounts: counts }
     if (!waiting.length) delete next.backfillFrom
     return next
   })
