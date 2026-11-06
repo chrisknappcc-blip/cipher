@@ -22,6 +22,10 @@ const mins = (sec) => (sec ? `${Math.round(sec / 60)} min` : '')
 
 const panel = { background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)' }
 const muted = { color: 'var(--text-tertiary)', fontSize: 12 }
+const selStyle = { fontSize: 12, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }
+// Same key as the server uses for a rep: their email if there is one, otherwise their name, in lower case.
+const repKeyOf = (item) => String((item && (item.ownerEmail || item.ownerName)) || '').toLowerCase()
+const NOT_IDENTIFIED = 'Gong could not tell whether the other person is outside the company, so this call was included to be safe.'
 
 const STATUS_NOTE = {
   too_short: 'This call is counted, but not enough was said to analyze.',
@@ -84,6 +88,7 @@ export function CallCard({ item, selected, unread, onClick }) {
         {failed && <Pill color="#A63D40">Failed</Pill>}
         {item.status === 'too_short' && <Pill color="#6B7280">Too short</Pill>}
         {item.status === 'no_transcript' && <Pill color="#6B7280">No transcript</Pill>}
+        {item.callKind === 'likely_external' && <span title={NOT_IDENTIFIED}><Pill color="#6B7280">Not identified</Pill></span>}
       </div>
       <div style={{ ...muted, marginBottom: item.verdict ? 4 : 0 }}>{fmtWhen(item.started)}{item.ownerName ? ` · ${item.ownerName}` : ''}{item.durationSec ? ` · ${mins(item.durationSec)}` : ''}</div>
       {item.verdict && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', overflowWrap: 'anywhere' }}>{item.verdict}</div>}
@@ -111,6 +116,7 @@ export function DebriefDetail({ record, viewAll, onReanalyze, busy, reanalyzing 
             {[a?.prospect?.callTopic, fmtWhen(g.started), mins(g.durationSec), record.ownerName && `Rep: ${record.ownerName}`].filter(Boolean).join(' · ')}
           </div>
           {(record.internal || []).length > 0 && <div style={muted}>Care Continuity: {record.internal.map((p) => p.name || p.email).filter(Boolean).join(', ')}</div>}
+          {record.callKind === 'likely_external' && <div style={muted}>{NOT_IDENTIFIED}</div>}
         </div>
         <ScoreBadge engagement={record.engagement} />
         <div className="debrief-no-print" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -239,7 +245,7 @@ export function RecapPanel({ data, viewAll, onOpen }) {
   )
 }
 
-function StatusPanel({ data, onBackfill, onPoll, busy, notice }) {
+function StatusPanel({ data, onBackfill, onPoll, busy, notice, backfillDays = 7, onBackfillDays = () => {}, coverage = null, coverageDays = 14, onCoverageDays = () => {}, onCoverage = () => {}, onPull = () => {} }) {
   const c = data.config || {}
   const yes = (v) => <Pill color={v ? '#2E7D4F' : '#A63D40'}>{v ? 'set' : 'MISSING'}</Pill>
   return (
@@ -255,14 +261,45 @@ function StatusPanel({ data, onBackfill, onPoll, busy, notice }) {
         ['Waiting on a transcript', data.poll.waitingOnTranscript],
         ['Recent requests to the poller', (data.poll.ticks && data.poll.ticks.length) ? data.poll.ticks.slice(0, 5).map((t) => `${fmtWhen(t.at)} (${friendlyCaller(t.caller)})`).join(', ') : 'none yet'],
         ['Backfill', data.poll.backfillFrom ? `running from ${fmtWhen(data.poll.backfillFrom)}` : 'not running'],
+        ['People listed from Gong', data.people ? (data.people.error ? `could not be read: ${data.people.error}` : data.people.fetchedAt ? `${data.people.count} active, updated ${fmtWhen(data.people.fetchedAt)}` : 'not read yet') : 'n/a'],
       ]} />
+      <H>Coverage check against Gong</H>
+      <div style={muted}>Compares what Gong has with what has been pulled in, rep by rep, so you can see who is missing and why. It only reads: nothing is analyzed or changed.</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0' }}>
+        <select aria-label="Days to check" value={coverageDays} onChange={(e) => onCoverageDays(Number(e.target.value))} style={selStyle}><option value={7}>Last 7 days</option><option value={14}>Last 14 days</option><option value={30}>Last 30 days</option></select>
+        <button disabled={busy || (coverage && coverage.loading)} onClick={onCoverage} style={{ fontSize: 12, padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}>{coverage && coverage.loading ? 'Checking Gong...' : 'Check Gong'}</button>
+      </div>
+      {coverage && coverage.error && <Callout color="#A63D40">{coverage.error}</Callout>}
+      {coverage && coverage.totals && (() => { const t = coverage.totals; return (
+        <div data-coverage>
+          <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.55, marginBottom: 8 }}>
+            Gong has <strong>{t.calls}</strong> calls in the last {coverage.days} days. <strong>{t.outside + t.likely}</strong> have an outside participant{t.likely ? ` (${t.likely} where Gong could not identify the other person)` : ''}, and <strong>{t.internal}</strong> were left out as internal only. Of the outside calls: {t.analyzed} analyzed, {t.tooShort} too short, {t.noTranscript} with no transcript, {t.failed} failed, <strong>{t.waiting} waiting</strong>.
+          </div>
+          <Table headers={['Rep', 'In Gong', 'Outside', 'Not identified', 'Internal only', 'Analyzed', 'Too short', 'Waiting']} rows={coverage.byHost.map((h) => [<span key="n">{h.name}{h.email ? <div style={{ ...muted, fontSize: 11 }}>{h.email}</div> : null}</span>, h.calls, h.outside, h.likely, h.internal, h.analyzed, h.tooShort, h.waiting])} />
+          {Array.isArray(coverage.noCalls) && (coverage.noCalls.length > 0
+            ? <div data-no-calls style={{ ...muted, marginTop: 8, lineHeight: 1.5 }}><strong>People Gong lists as active with no calls in these {coverage.days} days:</strong> {coverage.noCalls.map((x) => x.name).join(', ')}. If one of them should have calls, check that their calls are being recorded in Gong.</div>
+            : <div data-no-calls style={{ ...muted, marginTop: 8 }}>Everyone Gong lists as active has at least one call in these {coverage.days} days.</div>)}
+          {coverage.noCalls === null && <div data-no-calls style={{ ...muted, marginTop: 8 }}>Gong's list of people could not be read, so people with no calls are not shown.</div>}
+          {t.waiting > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <button disabled={busy} onClick={onPull} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--accent)', background: 'var(--accent-light)', color: 'var(--text)', cursor: 'pointer' }}>Pull in {t.waiting} waiting {t.waiting === 1 ? 'call' : 'calls'} (about ${coverage.estimatedCost.toFixed(2)})</button>
+              <div style={{ ...muted, marginTop: 4 }}>A rough estimate at about 17 cents for each call that is analyzed; calls too short to analyze cost nothing. They are analyzed three at a time, every 15 minutes, so a large batch takes a while. Run the check again later to see it shrink.</div>
+            </div>
+          )}
+          {coverage.skippedExamples.length > 0 && (<>
+            <H>Calls left out as internal only</H>
+            <Table headers={['Call', 'Rep', 'When', 'How Gong labeled it']} rows={coverage.skippedExamples.map((x) => [x.title, x.host, fmtWhen(x.started), `${x.scope ? `scope ${x.scope}` : 'no scope given'}${x.labels ? `: ${x.labels.internal} ours, ${x.labels.external} outside, ${x.labels.unknown} not identified` : ''}`])} />
+            <div style={{ ...muted, marginTop: 4 }}>Gong labeled everyone on these as Care Continuity. If one of them was really a call with a prospect, that is worth knowing.</div>
+          </>)}
+        </div>) })()}
       <H>Calls, this week and last</H>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{Object.entries(data.byStatus).map(([s, n]) => <Pill key={s} color={s === 'failed' ? '#A63D40' : s === 'complete' ? '#2E7D4F' : '#6B7280'}>{s.replace('_', ' ')} {n}</Pill>)}{!Object.keys(data.byStatus).length && <span style={muted}>No calls yet.</span>}</div>
       {data.recentFailures.length > 0 && <><H>Recent failures</H><Table headers={['Call', 'Attempts', 'Reason']} rows={data.recentFailures.map((f) => [f.title || f.callId, f.attempts, f.error])} /></>}
       <div style={{ marginTop: 16 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button disabled={busy} onClick={onPoll} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>{busy ? 'Working...' : 'Check Gong now'}</button>
-          <button disabled={busy} onClick={onBackfill} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>Analyze the past 7 days of calls</button>
+          <select aria-label="Days to analyze" value={backfillDays} onChange={(e) => onBackfillDays(Number(e.target.value))} style={selStyle}><option value={7}>7 days</option><option value={14}>14 days</option><option value={30}>30 days</option><option value={60}>60 days</option></select>
+          <button disabled={busy} onClick={() => onBackfill(backfillDays)} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>Analyze the past {backfillDays} days of calls</button>
         </div>
         <div style={{ ...muted, marginTop: 4 }}>Both run a check straight away and report what they found. The scheduled check then continues every 15 minutes, three calls at a time. If "Recent requests to the poller" never shows the Netlify scheduler, the schedule is not running.</div>
         {notice && <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--bg-secondary)', fontSize: 12.5, color: 'var(--text)', overflowWrap: 'anywhere' }}>{notice}</div>}
@@ -274,7 +311,7 @@ function StatusPanel({ data, onBackfill, onPoll, busy, notice }) {
 // Who asked the poller to run: Netlify's scheduler, a person in a browser, or the admin button.
 export function friendlyCaller(c) {
   const t = String(c || '')
-  if (/clockwork/i.test(t)) return 'Netlify scheduler'
+  if (/clockwork|scheduler/i.test(t)) return 'Netlify scheduler' // production reports "Netlify Functions Scheduler"
   if (/admin/i.test(t)) return 'admin button'
   if (/mozilla|chrome|safari|firefox|edge/i.test(t)) return 'a web browser'
   return t || 'unknown'
@@ -309,6 +346,9 @@ export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 800
   const [notice, setNotice] = useState(null)
   const [statusTick, setStatusTick] = useState(0)
   const [reanalysis, setReanalysis] = useState(null) // { id, since, prev } while a re-analysis is running
+  const [coverage, setCoverage] = useState(null)
+  const [coverageDays, setCoverageDays] = useState(14)
+  const [backfillDays, setBackfillDays] = useState(7)
 
   const api = useCallback((path, options) => apiFetch(path, getToken, options), [getToken])
   const pushUnread = useCallback((l) => onUnreadChange && onUnreadChange((l.unreadIds?.length || 0) + (l.recap?.unread ? 1 : 0)), [onUnreadChange])
@@ -350,7 +390,7 @@ export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 800
   useEffect(() => {
     if (mode !== 'recap' || !recapWeek) return
     let alive = true
-    const rep = repFilter && list ? (list.items.find((i) => i.ownerName === repFilter)?.ownerEmail || '') : ''
+    const rep = repFilter && repFilter.includes('@') ? repFilter : (repFilter && list ? (list.items.find((i) => repKeyOf(i) === repFilter)?.ownerEmail || '') : '')
     api(`/api/debriefs/recap?week=${recapWeek}${rep ? `&rep=${encodeURIComponent(rep)}` : ''}`).then((r) => {
       if (!alive) return
       setRecapData(r)
@@ -404,8 +444,20 @@ export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 800
     } catch (e) { setNotice(e.message) } finally { setBusy(false) }
   }
 
-  const reps = useMemo(() => [...new Set((list?.items || []).map((i) => i.ownerName).filter(Boolean))].sort(), [list])
-  const items = useMemo(() => (list?.items || []).filter((i) => (!repFilter || i.ownerName === repFilter) && (!bandFilter || i.engagement?.band === bandFilter)), [list, repFilter, bandFilter])
+  // The server sends everyone who has had an outside call, including reps with no analyzed call yet. (If an older
+  // server answers without that list, fall back to whoever owns a call on screen.)
+  const reps = useMemo(() => {
+    if (list?.reps) return list.reps
+    const m = new Map()
+    for (const i of list?.items || []) { const k = repKeyOf(i); if (k && !m.has(k)) m.set(k, { key: k, name: i.ownerName || i.ownerEmail, analyzed: (list.items || []).filter((x) => repKeyOf(x) === k && x.status === 'complete').length }) }
+    return [...m.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)))
+  }, [list])
+  const items = useMemo(() => (list?.items || []).filter((i) => (!repFilter || repKeyOf(i) === repFilter) && (!bandFilter || i.engagement?.band === bandFilter)), [list, repFilter, bandFilter])
+  const emptyWeeks = useMemo(() => (list?.weekCounts ? (list.weeks || []).filter((w) => !list.weekCounts[w]) : []), [list])
+  const checkCoverage = async () => {
+    setCoverage({ loading: true })
+    try { setCoverage(await api(`/api/debriefs/coverage?days=${coverageDays}`)) } catch (e) { setCoverage({ error: e.message }) }
+  }
   const viewAll = !!list?.viewAll
   const sel = { fontSize: 12, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }
   const tabBtn = (key, label, badge) => (
@@ -433,12 +485,24 @@ export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 800
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {mode === 'calls' && <select value={weeks} onChange={(e) => setWeeks(Number(e.target.value))} style={sel}><option value={2}>Last 2 weeks</option><option value={4}>Last 4 weeks</option><option value={8}>Last 8 weeks</option></select>}
           {mode === 'recap' && list && <select value={recapWeek || ''} onChange={(e) => setRecapWeek(e.target.value)} style={sel}>{list.weeks.map((w) => <option key={w} value={w}>Week of {fmtWeek(w)}</option>)}</select>}
-          {viewAll && mode !== 'status' && <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)} style={sel}><option value="">All reps</option>{reps.map((r) => <option key={r} value={r}>{r}</option>)}</select>}
+          {viewAll && mode !== 'status' && <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)} style={sel}><option value="">All reps</option>{reps.map((r) => <option key={r.key} value={r.key}>{r.name} ({r.analyzed})</option>)}</select>}
           {mode === 'calls' && <select value={bandFilter} onChange={(e) => setBandFilter(e.target.value)} style={sel}><option value="">All scores</option><option>High</option><option>Medium</option><option>Low</option><option>Very low</option></select>}
         </div>
       </div>
 
       {error && <div style={{ ...panel, padding: 12, color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{error}</div>}
+      {list && mode === 'calls' && list.weekCounts && (
+        <div data-week-counts style={{ ...muted, marginBottom: 10 }}>
+          Calls pulled in, by week: {(list.weeks || []).map((w, i) => <span key={w}>{i ? ' · ' : ''}{fmtWeek(w)}: {list.weekCounts[w] ?? 0}</span>)}
+          {emptyWeeks.length > 0 && (
+            <div data-empty-weeks style={{ marginTop: 3 }}>
+              {viewAll
+                ? <>Nothing has been pulled in for the {emptyWeeks.length > 1 ? 'weeks' : 'week'} of {emptyWeeks.map(fmtWeek).join(', ')}. Calls older than about a week are only pulled in when you ask. <button onClick={() => setMode('status')} style={{ ...muted, background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--accent-text)', textDecoration: 'underline' }}>Open Status to check Gong and pull them in.</button></>
+                : <>No calls to show for the {emptyWeeks.length > 1 ? 'weeks' : 'week'} of {emptyWeeks.map(fmtWeek).join(', ')}.</>}
+            </div>
+          )}
+        </div>
+      )}
       {notice && mode !== 'status' && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginBottom: 10 }}>{notice}</div>}
       {!list && !error && <div style={muted}>Loading...</div>}
 
@@ -458,7 +522,7 @@ export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 800
       )}
 
       {list && mode === 'recap' && (recapData ? <RecapPanel data={recapData} viewAll={viewAll} onOpen={openCall} /> : <div style={muted}>Loading recap...</div>)}
-      {list && mode === 'status' && viewAll && (statusData ? <StatusPanel data={statusData} busy={busy} notice={notice} onBackfill={() => post('/api/debriefs/backfill', { days: 7 }, (r) => describePoll(r.poll, 'Backfill saved.'))} onPoll={() => post('/api/debriefs/poll', {}, (r) => describePoll(r.poll))} /> : <div style={muted}>Loading status...</div>)}
+      {list && mode === 'status' && viewAll && (statusData ? <StatusPanel data={statusData} busy={busy} notice={notice} backfillDays={backfillDays} onBackfillDays={setBackfillDays} onBackfill={(days) => post('/api/debriefs/backfill', { days }, (r) => describePoll(r.poll, `Backfill of ${r.days} days saved.`))} coverage={coverage} coverageDays={coverageDays} onCoverageDays={setCoverageDays} onCoverage={checkCoverage} onPull={() => post('/api/debriefs/backfill', { days: coverageDays }, (r) => describePoll(r.poll, `Pulling in the last ${r.days} days.`))} onPoll={() => post('/api/debriefs/poll', {}, (r) => describePoll(r.poll))} /> : <div style={muted}>Loading status...</div>)}
     </div>
   )
 }
