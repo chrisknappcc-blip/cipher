@@ -8,7 +8,7 @@
 
 import { withAuth } from './utils/auth.js'
 import * as cd from './utils/callDebrief.js'
-import { buildStore, makeTrigger, configHealth, buildPoll } from './utils/debriefDeps.js'
+import { buildStore, buildGong, makeTrigger, configHealth, buildPoll } from './utils/debriefDeps.js'
 
 const DAY = 24 * 3600e3
 const json = (statusCode, body) => ({ statusCode, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(body) })
@@ -18,7 +18,7 @@ const SEEN_RE = /^(recap:\d{4}-\d{2}-\d{2}|[0-9A-Za-z_-]{1,40})$/
 
 export function createHandler(getDeps) {
   return async (event, context) => withAuth(async (event, _ctx, user) => {
-    const { store, viewAllSet, trigger, health, poll, pollTimeoutMs = 8500, now = () => new Date() } = getDeps()
+    const { store, viewAllSet, trigger, health, poll, gong, pollTimeoutMs = 8500, coverageTimeoutMs = 20000, now = () => new Date() } = getDeps()
     const email = String(user.email || '').toLowerCase()
     const viewAll = viewAllSet.has(email)
     const method = event.httpMethod
@@ -58,8 +58,14 @@ export function createHandler(getDeps) {
         const items = keys.slice(0, n).flatMap((k) => byWeek[k]).sort((a, b) => String(b.started).localeCompare(String(a.started)))
         const seen = await store.getSeen(email)
         const rw = latestReleased()
+        // How many calls each selected week holds, so a range that reaches back past what has been pulled in
+        // shows zeros instead of looking like the filter did nothing. And, for people who see everything, the
+        // reps to offer in the dropdown, including ones with no analyzed call yet.
+        const weekCounts = Object.fromEntries(keys.slice(0, n).map((k) => [k, byWeek[k].length]))
+        const st = viewAll ? await store.getState() : null
+        const reps = viewAll ? cd.buildRepList(st.repsSeen, items, st.users) : null
         return json(200, {
-          viewAll, email, weeks: keys.slice(0, n), items,
+          viewAll, email, weeks: keys.slice(0, n), weekCounts, ...(reps ? { reps } : {}), items,
           unreadIds: items.filter((s) => s.status === 'complete' && !seen[s.callId]).map((s) => s.callId),
           recap: { week: rw, unread: !!(byWeek[rw]?.length) && !seen[`recap:${rw}`] },
         })
@@ -99,7 +105,7 @@ export function createHandler(getDeps) {
       }
 
       // Everything below is for people who can see everything.
-      if (['/status', '/backfill', '/reanalyze', '/poll'].includes(path)) {
+      if (['/status', '/backfill', '/reanalyze', '/poll', '/coverage'].includes(path)) {
         if (!viewAll) return json(403, { error: 'Not allowed.' })
 
         if (method === 'GET' && path === '/status') {
@@ -111,9 +117,32 @@ export function createHandler(getDeps) {
           return json(200, {
             config: health ? health() : {},
             poll: { lastPollAt: state.lastPollAt || null, lastPollError: state.lastPollError || null, counts: state.lastPollCounts || null, lowWater: state.lowWater || null, backfillFrom: state.backfillFrom || null, waitingOnTranscript: Object.keys(state.pending || {}).length, ticks: state.ticks || [] },
+            people: { count: (state.users || []).filter((u) => u.active !== false).length, fetchedAt: state.usersFetchedAt || null, error: state.usersError || null },
             byStatus,
             recentFailures: all.filter((s) => s.status === 'failed').sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 10).map((s) => ({ callId: s.callId, title: s.title, error: s.error, attempts: s.attempts, updatedAt: s.updatedAt })),
           })
+        }
+        // What Gong has in the last N days versus what Cipher pulled in, by rep: how many calls, how many have an
+        // outside participant, how many are analyzed, how many are waiting (and roughly what they will cost),
+        // plus examples of calls that were left out as internal so a wrong call can be spotted. Read only.
+        if (method === 'GET' && path === '/coverage') {
+          if (!gong) return json(200, { error: 'The Gong connection is not available.' })
+          const days = Math.min(30, Math.max(1, parseInt(qs.days, 10) || 14))
+          const toMs = now().getTime(), fromMs = toMs - days * DAY
+          let timer
+          const tooSlow = new Promise((resolve) => { timer = setTimeout(() => resolve('slow'), coverageTimeoutMs) })
+          let calls
+          try { calls = await Promise.race([gong.listCalls({ from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString() }), tooSlow]) }
+          catch (err) { return json(200, { days, error: `The check against Gong failed: ${err.message}` }) }
+          finally { clearTimeout(timer) }
+          if (calls === 'slow') return json(200, { days, error: 'Gong is taking too long to answer. Try fewer days, or try again in a minute.' })
+          const weekKeys = Array.from({ length: Math.ceil(days / 7) + 1 }, (_, i) => cd.prevWeekStart(currentWeek, i))
+          const done = new Map()
+          for (const wk of await Promise.all(weekKeys.map((k) => store.getIndex(k)))) for (const s of wk) done.set(s.callId, s)
+          const rows = calls.map((c) => { const meta = cd.callMeta(c); const o = cd.ownerOf(meta, cd.splitParties(c.parties || [])); return { id: meta.id, started: meta.startedIso, title: meta.title, host: { name: o.ownerName, email: o.ownerEmail }, kind: cd.callKind(c), scope: meta.scope, labels: cd.affiliationCounts(c.parties), status: done.get(meta.id)?.status || null } })
+          let users = null
+          try { users = typeof gong.listUsers === 'function' ? await gong.listUsers() : null } catch { users = null }
+          return json(200, { days, ...cd.buildCoverage(rows, users) })
         }
         if (method === 'POST' && path === '/backfill') {
           const days = Math.min(60, Math.max(1, parseInt(body().days, 10) || 7))
@@ -141,5 +170,6 @@ export const handler = createHandler(() => ({
   viewAllSet: cd.parseViewAll(process.env.DEBRIEF_VIEW_ALL_EMAILS),
   trigger: makeTrigger(),
   poll: buildPoll(),
+  gong: (() => { try { return buildGong() } catch { return null } })(),
   health: () => configHealth(),
 }))
