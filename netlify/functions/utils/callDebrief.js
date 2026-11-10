@@ -529,3 +529,25 @@ export function buildCoverage(rows, users = null) {
     skippedExamples: skippedExamples.sort((a, b) => String(b.started).localeCompare(String(a.started))).slice(0, 25),
   }
 }
+
+// ─── Calls that were found but are not analyzed yet ─────────────────────────
+// The poller keeps a short list of calls it has found and not finished (queued, or waiting for Gong to produce a
+// transcript). They have no record yet, so without this they would be invisible. This turns one into a list item.
+export function toWaitingItem(w) {
+  return {
+    callId: String(w.id), status: 'waiting', started: w.started || null, title: w.title || '', url: w.url || null, durationSec: 0,
+    ownerName: w.ownerName || '', ownerEmail: w.ownerEmail || '', participantEmails: w.participantEmails || [],
+    externalNames: [], externalEmails: [], organization: '', topic: '', engagement: null, verdict: '', greenCount: 0, redCount: 0, topRedFlag: '',
+    owedItems: [], openQuestions: [], callKind: w.kind || null, waitingReason: w.reason || null, attempts: w.attempts || 0,
+  }
+}
+// How many of the calls on screen are in each state, for the one line summary above the list.
+export function summarizeStatuses(items) {
+  const out = { total: 0, complete: 0, tooShort: 0, noTranscript: 0, failed: 0, skipped: 0, waiting: 0 }
+  for (const i of items) {
+    out.total++
+    if (i.status === 'complete') out.complete++; else if (i.status === 'too_short') out.tooShort++; else if (i.status === 'no_transcript') out.noTranscript++
+    else if (i.status === 'failed') out.failed++; else if (i.status === 'skipped') out.skipped++; else out.waiting++
+  }
+  return out
+}

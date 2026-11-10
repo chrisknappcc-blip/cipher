@@ -17,9 +17,15 @@ import * as cd from './callDebrief.js'
 const HOUR = 3600e3
 const DAY = 24 * HOUR
 const MAX_FAILURES = 3
+// A call whose transcript is not ready is tried again less and less often: 10 minutes, 20, 40, 80, 160, 320, then every
+// 6 hours. Before this, every such call was retried on every pass, oldest first, so a few calls that never get a
+// transcript could take every slot and starve newer calls that were ready.
+const RETRY_BASE_MS = 10 * 60e3
+const RETRY_MAX_MS = 6 * HOUR
+export const retryAfterMs = (attempts) => Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.max(0, (attempts || 1) - 1))
 
 export async function pollOnce({ gong, store, trigger, now = () => new Date(), config = {}, force = false, caller = '' }) {
-  const maxPerRun = config.maxPerRun ?? 5
+  const maxPerRun = force ? (config.maxPerForcedRun ?? 8) : (config.maxPerRun ?? 5)
   const nowMs = now().getTime()
   const state = await store.getState()
 
@@ -64,7 +70,10 @@ export async function pollOnce({ gong, store, trigger, now = () => new Date(), c
 
   const external = calls
     .filter(cd.isExternalCall)
-    .map((c) => ({ id: String(c.metaData?.id || ''), started: Date.parse(c.metaData?.started) }))
+    .map((c) => {
+      const meta = cd.callMeta(c), parts = cd.splitParties(c.parties || []), o = cd.ownerOf(meta, parts)
+      return { id: String(c.metaData?.id || ''), started: Date.parse(c.metaData?.started), info: { startedIso: meta.startedIso, title: meta.title, url: meta.url, ownerName: o.ownerName, ownerEmail: o.ownerEmail, participantEmails: [...new Set(parts.internal.map((p) => p.email).filter(Boolean))], kind: cd.callKind(c) } }
+    })
     .filter((c) => c.id && Number.isFinite(c.started))
 
   // What is already done, from the weekly indexes covering the window.
@@ -77,13 +86,15 @@ export async function pollOnce({ gong, store, trigger, now = () => new Date(), c
     return !!s && (cd.isDoneStatus(s.status) || (s.status === 'failed' && (s.attempts || 0) >= MAX_FAILURES))
   }
   const tooSoon = (id) => {
-    const p = state.pending?.[id]?.lastTried
+    const p = state.pending?.[id]
     const f = done.get(id)?.status === 'failed' ? done.get(id).updatedAt : null
-    return (p && nowMs - Date.parse(p) < 10 * 60e3) || (f && nowMs - Date.parse(f) < 30 * 60e3)
+    return !!((p && p.lastTried && nowMs - Date.parse(p.lastTried) < retryAfterMs(p.attempts)) || (f && nowMs - Date.parse(f) < 30 * 60e3))
   }
+  const triedBefore = (id) => !!state.pending?.[id] || done.get(id)?.status === 'failed'
 
   const waiting = external.filter((c) => !resolved(c.id)).sort((a, b) => a.started - b.started)
-  const ready = waiting.filter((c) => force || !tooSoon(c.id))
+  // Calls never tried go first (oldest first), then retries, so fresh calls are never stuck behind old ones.
+  const ready = waiting.filter((c) => force || !tooSoon(c.id)).sort((a, b) => (triedBefore(a.id) ? 1 : 0) - (triedBefore(b.id) ? 1 : 0) || a.started - b.started)
   const batch = ready.slice(0, maxPerRun)
   const results = await Promise.allSettled(batch.map((c) => trigger(c.id)))
   const triggerErrors = results.filter((r) => r.status === 'rejected').map((r) => String(r.reason?.message || r.reason))
@@ -99,10 +110,13 @@ export async function pollOnce({ gong, store, trigger, now = () => new Date(), c
     } catch (err) { peopleUpdate = { usersError: String(err.message || err).slice(0, 200), usersFetchedAt: new Date(nowMs - 11 * HOUR).toISOString() } }
   }
 
+  // The calls found and not finished, kept so the screen can show them instead of leaving them invisible.
+  const waitingCalls = waiting.slice(0, 150).map((c) => ({ id: c.id, started: c.info.startedIso, title: c.info.title, url: c.info.url, ownerName: c.info.ownerName, ownerEmail: c.info.ownerEmail, participantEmails: c.info.participantEmails, kind: c.info.kind, attempts: state.pending?.[c.id]?.attempts || 0, reason: state.pending?.[c.id]?.reason || null }))
+
   const lowWater = waiting.length ? new Date(Math.min(...waiting.map((c) => c.started))).toISOString() : null
-  const counts = { listed: calls.length, external: external.length, likely: calls.filter((c) => cd.callKind(c) === 'likely_external').length, waiting: waiting.length, triggered: batch.length - triggerErrors.length, deferred: Math.max(0, ready.length - batch.length) }
+  const counts = { listed: calls.length, external: external.length, done: external.length - waiting.length, likely: calls.filter((c) => cd.callKind(c) === 'likely_external').length, waiting: waiting.length, triggered: batch.length - triggerErrors.length, deferred: Math.max(0, ready.length - batch.length) }
   await store.updateState((s) => {
-    const next = { ...s, ...peopleUpdate, repsSeen: cd.mergeRepsSeen(s.repsSeen, [...hostMap.values()]), lastPolledTo: new Date(nowMs).toISOString(), lowWater, lastPollAt: now().toISOString(), lastPollError: triggerErrors[0] || null, lastPollCounts: counts }
+    const next = { ...s, ...peopleUpdate, waitingCalls, repsSeen: cd.mergeRepsSeen(s.repsSeen, [...hostMap.values()]), lastPolledTo: new Date(nowMs).toISOString(), lowWater, lastPollAt: now().toISOString(), lastPollError: triggerErrors[0] || null, lastPollCounts: counts }
     if (!waiting.length) delete next.backfillFrom
     return next
   })
