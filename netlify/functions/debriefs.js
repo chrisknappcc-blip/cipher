@@ -53,19 +53,34 @@ export function createHandler(getDeps) {
 
     try {
       if (method === 'GET' && path === '/list') {
-        const n = Math.min(8, Math.max(1, parseInt(qs.weeks, 10) || 2))
+        // A real "last N days" (by when each call started), not calendar weeks: "Last 2 weeks" used to mean this
+        // week and last week, which on a Tuesday is nine days. The older ?weeks=N form still works.
+        const daysAsked = parseInt(qs.days, 10)
+        const days = Number.isFinite(daysAsked) && daysAsked > 0 ? Math.min(63, daysAsked) : null
+        const n = days ? Math.min(10, Math.ceil(days / 7) + 1) : Math.min(8, Math.max(1, parseInt(qs.weeks, 10) || 2))
+        const cutoff = days ? now().getTime() - days * DAY : null
         const { keys, byWeek } = await loadWeeks(Math.max(n, 2))
-        const items = keys.slice(0, n).flatMap((k) => byWeek[k]).sort((a, b) => String(b.started).localeCompare(String(a.started)))
+        const st = await store.getState()
+        const shownKeys = keys.slice(0, n)
+        let items = shownKeys.flatMap((k) => byWeek[k])
+        // Calls found but not analyzed yet have no record, so show them as waiting (once analyzed, the real record replaces them).
+        const have = new Set(Object.values(byWeek).flat().map((s) => s.callId))
+        const waitingItems = (st.waitingCalls || [])
+          .filter((w) => !have.has(String(w.id)) && cd.canSee({ participantEmails: w.participantEmails, ownerEmail: w.ownerEmail }, email, viewAllSet) && (days || shownKeys.includes(cd.weekStartKey(Date.parse(w.started) || now()))))
+          // the snapshot was taken when the pass began, so take the reason and tries from the live retry record
+          .map((w) => { const p = (st.pending || {})[w.id]; return cd.toWaitingItem(p ? { ...w, reason: p.reason || w.reason, attempts: p.attempts || w.attempts } : w) })
+        items = items.concat(waitingItems)
+        if (cutoff) items = items.filter((s) => Date.parse(s.started) >= cutoff)
+        items.sort((a, b) => String(b.started).localeCompare(String(a.started)))
         const seen = await store.getSeen(email)
         const rw = latestReleased()
         // How many calls each selected week holds, so a range that reaches back past what has been pulled in
         // shows zeros instead of looking like the filter did nothing. And, for people who see everything, the
         // reps to offer in the dropdown, including ones with no analyzed call yet.
-        const weekCounts = Object.fromEntries(keys.slice(0, n).map((k) => [k, byWeek[k].length]))
-        const st = viewAll ? await store.getState() : null
+        const weekCounts = Object.fromEntries(shownKeys.map((k) => [k, items.filter((s) => cd.weekStartKey(Date.parse(s.started) || now()) === k).length]))
         const reps = viewAll ? cd.buildRepList(st.repsSeen, items, st.users) : null
         return json(200, {
-          viewAll, email, weeks: keys.slice(0, n), weekCounts, ...(reps ? { reps } : {}), items,
+          viewAll, email, days, weeks: shownKeys, weekCounts, summary: cd.summarizeStatuses(items), ...(reps ? { reps } : {}), items,
           unreadIds: items.filter((s) => s.status === 'complete' && !seen[s.callId]).map((s) => s.callId),
           recap: { week: rw, unread: !!(byWeek[rw]?.length) && !seen[`recap:${rw}`] },
         })
