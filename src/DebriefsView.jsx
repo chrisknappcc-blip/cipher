@@ -79,8 +79,10 @@ function Table({ headers, rows, empty }) {
 
 export function CallCard({ item, selected, unread, onClick }) {
   const failed = item.status === 'failed'
+  const waiting = item.status === 'waiting' // found in Gong, not analyzed yet, so there is no debrief to open
+  const Tag = waiting ? 'div' : 'button'
   return (
-    <button onClick={onClick} style={{ ...panel, textAlign: 'left', cursor: 'pointer', padding: '10px 12px', width: '100%', display: 'block', borderColor: selected ? 'var(--accent)' : 'var(--border)', background: selected ? 'var(--accent-light)' : 'var(--bg-panel)' }}>
+    <Tag onClick={waiting ? undefined : onClick} style={{ ...panel, textAlign: 'left', cursor: waiting ? 'default' : 'pointer', padding: '10px 12px', width: '100%', display: 'block', borderColor: selected ? 'var(--accent)' : 'var(--border)', background: selected ? 'var(--accent-light)' : 'var(--bg-panel)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
         {unread && <span title="New" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', flexShrink: 0 }} />}
         <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text)', overflowWrap: 'anywhere', flex: 1 }}>{item.organization || item.title || 'Untitled call'}</div>
@@ -88,16 +90,18 @@ export function CallCard({ item, selected, unread, onClick }) {
         {failed && <Pill color="#A63D40">Failed</Pill>}
         {item.status === 'too_short' && <Pill color="#6B7280">Too short</Pill>}
         {item.status === 'no_transcript' && <Pill color="#6B7280">No transcript</Pill>}
+        {waiting && <Pill color="#B7791F">Waiting</Pill>}
         {item.callKind === 'likely_external' && <span title={NOT_IDENTIFIED}><Pill color="#6B7280">Not identified</Pill></span>}
       </div>
       <div style={{ ...muted, marginBottom: item.verdict ? 4 : 0 }}>{fmtWhen(item.started)}{item.ownerName ? ` · ${item.ownerName}` : ''}{item.durationSec ? ` · ${mins(item.durationSec)}` : ''}</div>
       {item.verdict && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', overflowWrap: 'anywhere' }}>{item.verdict}</div>}
+      {waiting && <div data-waiting-note style={{ ...muted, marginTop: 4, overflowWrap: 'anywhere' }}>{item.waitingReason === 'no_transcript' ? 'Waiting for Gong to produce the transcript. Cipher checks again, less often each time, and records it as having no transcript after about two days.' : 'Found in Gong and queued. It will be analyzed within the next few checks.'}{item.url ? <> <a href={item.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-text)' }}>Open in Gong</a></> : null}</div>}
       {item.status === 'complete' && (
         <div style={{ ...muted, marginTop: 4 }}>
           {item.greenCount} green · {item.redCount} red{item.owedItems?.length ? ` · ${item.owedItems.length} owed` : ''}{item.openQuestions?.length ? ` · ${item.openQuestions.length} open questions` : ''}
         </div>
       )}
-    </button>
+    </Tag>
   )
 }
 
@@ -257,7 +261,7 @@ function StatusPanel({ data, onBackfill, onPoll, busy, notice, backfillDays = 7,
       <Table headers={['', '']} rows={[
         ['Last run', data.poll.lastPollAt ? fmtWhen(data.poll.lastPollAt) : 'has not run yet'],
         ['Last error', data.poll.lastPollError || 'none'],
-        ['Last pass', data.poll.counts ? `${data.poll.counts.listed} listed, ${data.poll.counts.external} external, ${data.poll.counts.waiting} waiting, ${data.poll.counts.triggered} started, ${data.poll.counts.deferred} deferred` : 'n/a'],
+        ['Last pass', data.poll.counts ? `${data.poll.counts.listed} listed, ${data.poll.counts.external} with an outside participant (${data.poll.counts.done ?? data.poll.counts.external - data.poll.counts.waiting} done, ${data.poll.counts.waiting} waiting), ${data.poll.counts.triggered} started, ${data.poll.counts.deferred} deferred` : 'n/a'],
         ['Waiting on a transcript', data.poll.waitingOnTranscript],
         ['Recent requests to the poller', (data.poll.ticks && data.poll.ticks.length) ? data.poll.ticks.slice(0, 5).map((t) => `${fmtWhen(t.at)} (${friendlyCaller(t.caller)})`).join(', ') : 'none yet'],
         ['Backfill', data.poll.backfillFrom ? `running from ${fmtWhen(data.poll.backfillFrom)}` : 'not running'],
@@ -301,7 +305,7 @@ function StatusPanel({ data, onBackfill, onPoll, busy, notice, backfillDays = 7,
           <select aria-label="Days to analyze" value={backfillDays} onChange={(e) => onBackfillDays(Number(e.target.value))} style={selStyle}><option value={7}>7 days</option><option value={14}>14 days</option><option value={30}>30 days</option><option value={60}>60 days</option></select>
           <button disabled={busy} onClick={() => onBackfill(backfillDays)} style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: busy ? 'not-allowed' : 'pointer' }}>Analyze the past {backfillDays} days of calls</button>
         </div>
-        <div style={{ ...muted, marginTop: 4 }}>Both run a check straight away and report what they found. The scheduled check then continues every 15 minutes, three calls at a time. If "Recent requests to the poller" never shows the Netlify scheduler, the schedule is not running.</div>
+        <div style={{ ...muted, marginTop: 4 }}>Both run a check straight away and report what they found, and start up to eight calls at once. The scheduled check then continues every 15 minutes, three calls at a time. If "Recent requests to the poller" never shows the Netlify scheduler, the schedule is not running.</div>
         {notice && <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--bg-secondary)', fontSize: 12.5, color: 'var(--text)', overflowWrap: 'anywhere' }}>{notice}</div>}
       </div>
     </div>
@@ -325,12 +329,13 @@ export function describePoll(p, lead = '') {
   if (p.slow) return say('Gong is taking a while to answer. The scheduled check will pick it up within 15 minutes.')
   if (p.skipped) return say('A check ran a moment ago, so nothing new was started.')
   const errs = p.triggerErrors && p.triggerErrors.length ? ` ${p.triggerErrors.length} could not be started: ${p.triggerErrors[0]}` : ''
-  if (!p.waiting) return say(`Gong has ${p.external} calls with an outside participant in that window, and none are waiting to be analyzed.${errs}`)
-  return say(`Found ${p.external} calls with an outside participant. ${p.triggered} started now, ${p.deferred} queued for the next passes (three at a time, every 15 minutes).${errs}`)
+  if (!p.waiting) return say(`Gong has ${p.external} calls with an outside participant in that window, and all of them are already analyzed or counted.${errs}`)
+  const doneN = p.done ?? p.external - p.waiting
+  return say(`Gong has ${p.external} calls with an outside participant in that window: ${doneN} already done and ${p.waiting} waiting. ${p.triggered} started now, ${p.deferred} queued for the next passes (three at a time every 15 minutes; pressing Check Gong now starts up to eight at once).${errs}`)
 }
 
 export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 8000, listRefreshMs = 30000 }) {
-  const [weeks, setWeeks] = useState(2)
+  const [days, setDays] = useState(14) // a real "last N days", counted from each call's start
   const [list, setList] = useState(null)
   const [error, setError] = useState(null)
   const [mode, setMode] = useState('calls') // calls | recap | status
@@ -355,11 +360,11 @@ export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 800
 
   const loadList = useCallback(async () => {
     try {
-      const l = await api(`/api/debriefs/list?weeks=${weeks}`)
+      const l = await api(`/api/debriefs/list?days=${days}`)
       setList(l); setError(null); pushUnread(l)
       setRecapWeek((w) => w || l.recap.week)
     } catch (e) { setError(e.message) }
-  }, [api, weeks, pushUnread])
+  }, [api, days, pushUnread])
   useEffect(() => { loadList() }, [loadList])
   // New results appear on their own while you are looking at the list.
   useEffect(() => {
@@ -483,7 +488,7 @@ export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 800
         {tabBtn('recap', 'Weekly recap', list?.recap?.unread)}
         {viewAll && tabBtn('status', 'Status')}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {mode === 'calls' && <select value={weeks} onChange={(e) => setWeeks(Number(e.target.value))} style={sel}><option value={2}>Last 2 weeks</option><option value={4}>Last 4 weeks</option><option value={8}>Last 8 weeks</option></select>}
+          {mode === 'calls' && <select aria-label="Date range" value={days} onChange={(e) => setDays(Number(e.target.value))} style={sel}><option value={7}>Last 7 days</option><option value={14}>Last 14 days</option><option value={30}>Last 30 days</option><option value={60}>Last 60 days</option></select>}
           {mode === 'recap' && list && <select value={recapWeek || ''} onChange={(e) => setRecapWeek(e.target.value)} style={sel}>{list.weeks.map((w) => <option key={w} value={w}>Week of {fmtWeek(w)}</option>)}</select>}
           {viewAll && mode !== 'status' && <select value={repFilter} onChange={(e) => setRepFilter(e.target.value)} style={sel}><option value="">All reps</option>{reps.map((r) => <option key={r.key} value={r.key}>{r.name} ({r.analyzed})</option>)}</select>}
           {mode === 'calls' && <select value={bandFilter} onChange={(e) => setBandFilter(e.target.value)} style={sel}><option value="">All scores</option><option>High</option><option>Medium</option><option>Low</option><option>Very low</option></select>}
@@ -491,6 +496,11 @@ export default function DebriefsView({ getToken, onUnreadChange, refreshMs = 800
       </div>
 
       {error && <div style={{ ...panel, padding: 12, color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{error}</div>}
+      {list && mode === 'calls' && list.summary && (() => { const m = list.summary; const parts = [`${m.complete} analyzed`, m.tooShort ? `${m.tooShort} too short` : null, m.noTranscript ? `${m.noTranscript} with no transcript` : null, m.failed ? `${m.failed} failed` : null, m.skipped ? `${m.skipped} skipped` : null, m.waiting ? `${m.waiting} waiting to be analyzed` : null].filter(Boolean); return (
+        <div data-summary style={{ fontSize: 13, color: 'var(--text)', marginBottom: 6 }}>
+          <strong>{m.total} {m.total === 1 ? 'call' : 'calls'}</strong>{list.days ? ` in the last ${list.days} days` : ' in these weeks'}: {parts.join(', ')}.
+          {m.waiting > 0 && <div data-waiting-help style={{ ...muted, marginTop: 2 }}>Waiting calls were found in Gong and are analyzed three at a time, every 15 minutes. If Gong has not produced a transcript yet, Cipher checks again less often each time.{viewAll ? ' To start more now, open Status and press Check Gong now (it starts up to eight).' : ''}</div>}
+        </div>) })()}
       {list && mode === 'calls' && list.weekCounts && (
         <div data-week-counts style={{ ...muted, marginBottom: 10 }}>
           Calls pulled in, by week: {(list.weeks || []).map((w, i) => <span key={w}>{i ? ' · ' : ''}{fmtWeek(w)}: {list.weekCounts[w] ?? 0}</span>)}
