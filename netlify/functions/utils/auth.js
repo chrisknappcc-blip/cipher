@@ -1,6 +1,8 @@
 // netlify/functions/utils/auth.js
 // Netlify Identity JWT verification — replaces @clerk/backend
 
+import { trackUsage } from './usage.js'
+
 export async function verifyAuth(event, context) {
   // 1. Normal path. Netlify has already verified the token's signature and
   //    expiry and populated context.clientContext.user.
@@ -64,6 +66,8 @@ export function withAuth(handler) {
     }
     try {
       const user = await verifyAuth(event, context)
+      // Note that this person is active (for the Team usage view). Never throws, and waits well under a second.
+      await trackUsage(user, event)
       return await handler(event, context, user)
     } catch (err) {
       if (err instanceof AuthError) {
