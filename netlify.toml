@@ -19,6 +19,18 @@ timeout = 60
 [functions."debriefs"]
 timeout = 26
 
+[functions."planner"]
+timeout = 26
+
+# The Team tab. Each person's queue is worked out in its own request, so give it room.
+[functions."team"]
+timeout = 26
+
+# The main function had no limit set, so it ran on Netlify's short default. Work that is slow (the Team roster used
+# to compute everyone's queue in one request) could time out and fail the whole page.
+[functions."hubspot"]
+timeout = 26
+
 # The 15 minute check. Declared here as well as inside gong-poll.js: the first version relied only on the
 # in-file setting, and Netlify's scheduler was not seen calling it.
 [functions."gong-poll"]
@@ -57,6 +69,16 @@ status = 200
 [[redirects]]
 from = "/api/debriefs/*"
 to = "/.netlify/functions/debriefs/:splat"
+status = 200
+
+[[redirects]]
+from = "/api/planner/*"
+to = "/.netlify/functions/planner/:splat"
+status = 200
+
+[[redirects]]
+from = "/api/team/*"
+to = "/.netlify/functions/team/:splat"
 status = 200
 
 [[headers]]
@@ -109,4 +131,8 @@ Cache-Control = "public, max-age=31536000, immutable"
 # DEBRIEF_VIEW_ALL_EMAILS  Comma separated. Who sees every rep's debriefs (default: jhansel@carecontinuity.com)
 # DEBRIEF_MODEL            Optional. Defaults to claude-sonnet-5-5
 # GONG_BACKFILL_DAYS       Optional. How far back the very first poll looks (default 2)
+#
+# My Plan (personal planner). Needs no new settings: it reuses MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET,
+# MICROSOFT_REDIRECT_URI, ANTHROPIC_API_KEY, APP_URL, DEBRIEF_INTERNAL_SECRET and the Azure storage settings.
+# PLANNER_MODEL            Optional. Defaults to claude-sonnet-5-5
 # (ANTHROPIC_API_KEY and the Azure storage settings above are reused as they are.)
