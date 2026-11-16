@@ -74,7 +74,7 @@ const STOP = new Set(['health', 'healthcare', 'system', 'systems', 'medical', 'm
 export const nameTokens = (name) => String(name || '').toLowerCase().replace(/['’]/g, '').replace(/&/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter((w) => w && !STOP.has(w))
 export const nameKey = (name) => nameTokens(name).sort().join(' ')
 
-const tokenEq = (a, b) => a === b || (Math.min(a.length, b.length) >= 3 && (a.startsWith(b) || b.startsWith(a)))
+const tokenEq = (a, b) => a === b
 const within = (small, big) => small.length > 0 && small.every((t) => big.some((u) => tokenEq(t, u)))
 const meaningful = (toks) => toks.some((t) => t.length >= 3)
 
@@ -159,22 +159,36 @@ export function matchOrg(org, stateRaw, index) {
   return { status, accountId: primary.e.a.id, candidates: pool.slice(0, 5).map((c) => c.e.a.id), elsewhere }
 }
 
-// For records with no organization field (the Radar), look for a company whose whole name appears in the title.
+const STATE_WORDS = new Set(Object.values(STATES).flatMap((n) => n.toLowerCase().split(' ')))
+const GENERIC_SINGLE = new Set(['regional', 'valley', 'central', 'community', 'memorial', 'county', 'university', 'northern', 'southern', 'eastern', 'western', 'general', 'saint', 'good',
+  'samaritan', 'mercy', 'methodist', 'baptist', 'sacred', 'heart', 'family', 'children', 'childrens', 'trinity', 'unity', 'pioneer', 'summit', 'premier', 'lakeside', 'riverside'])
+// A company name may be matched from a title only when it is distinctive: not a state, not a common word, and either
+// two or more real words or one long unusual one. "Virginia Hospital Center" is not in a title that says Virginia.
+const titleOk = (toks) => {
+  if (!toks.length) return false
+  const plain = toks.filter((t) => !STATE_WORDS.has(t) && !GENERIC_SINGLE.has(t))
+  if (!plain.length) return false
+  return toks.length >= 2 || plain[0].length >= 6
+}
+
+// For records with no organization field (the Radar). Titles often name two organizations, so this is only ever a
+// possible match, and the result says so (via: 'title').
 export function matchTitle(title, states, index) {
   const tt = nameTokens(title)
   const found = []
   for (const st of states || []) {
     for (const e of index.byState.get(st) || []) {
-      if (!meaningful(e.tokens)) continue
-      if (e.tokens.length && within(e.tokens, tt)) found.push({ e, rel: 'exact' })
+      if (!titleOk(e.tokens)) continue
+      if (within(e.tokens, tt)) found.push({ e, rel: 'exact' })
     }
   }
-  if (!found.length) return { status: 'none', accountId: null, candidates: [], elsewhere: [] }
+  if (!found.length) return { status: 'none', accountId: null, candidates: [], elsewhere: [], via: 'title' }
   const { primary, status, pool } = pickBest(found)
-  return { status, accountId: primary.e.a.id, candidates: pool.slice(0, 5).map((c) => c.e.a.id), elsewhere: [] }
+  return { status, accountId: primary.e.a.id, candidates: pool.slice(0, 5).map((c) => c.e.a.id), elsewhere: [], via: 'title' }
 }
 
-// Records that are probably the same system: the same words in the name. Different BDRs or states is the serious kind.
+// Records that are probably the same system: the same words in the name, in at most three states. Different BDRs or
+// states is the serious kind. Returns { groups, hiddenCommon }.
 export function findDuplicates(accounts) {
   const groups = new Map()
   for (const a of accounts || []) {
@@ -184,13 +198,16 @@ export function findDuplicates(accounts) {
     groups.get(k).push(a)
   }
   const out = []
+  let hiddenCommon = 0
   for (const [key, list] of groups) {
     if (list.length < 2) continue
-    const bdrs = [...new Set(list.map((x) => x.bdr).filter(Boolean))], states = [...new Set(list.map((x) => x.state || x.stateRaw).filter(Boolean))]
+    const bdrs = [...new Set(list.map((x) => x.bdr).filter(Boolean))], states = [...new Set(list.map((x) => x.state || normState(x.stateRaw)).filter(Boolean))]
+    // "Community Medical Center" in twelve states is twelve different hospitals, not one system with copies.
+    if (states.length >= 4) { hiddenCommon++; continue }
     out.push({ key, name: list[0].name, count: list.length, kind: bdrs.length > 1 ? 'several_bdrs' : states.length > 1 ? 'several_states' : 'same_place', bdrs, states, ids: list.map((x) => x.id) })
   }
   const rank = { several_bdrs: 0, several_states: 1, same_place: 2 }
-  return out.sort((a, b) => rank[a.kind] - rank[b.kind] || b.count - a.count || a.name.localeCompare(b.name))
+  return { groups: out.sort((a, b) => rank[a.kind] - rank[b.kind] || b.count - a.count || a.name.localeCompare(b.name)), hiddenCommon }
 }
 
 export const pendingSize = (accounts, stars = {}) => (accounts || []).filter((a) => targetReasons(a, stars).length && sizeOf(a).status !== 'ok')
@@ -289,19 +306,24 @@ const GENERIC = new Set(['completes', 'complete', 'completed', 'acquisition', 'a
   'after', 'with', 'over', 'ceo', 'steps', 'down', 'board', 'terminates', 'chief', 'president', 'move', 'moves', 'leaves', 'bed', 'beds', 'er', 'ed'])
 const distinctive = (title) => new Set(nameTokens(title).filter((t) => t.length >= 4 && !GENERIC.has(t) && !/^\d+$/.test(t)))
 
-// The same event, reported by two tools, becomes one insight with both sources. It only joins an alert to a Radar
-// update when they share a state and at least two distinctive words, so an unrelated item is never swallowed.
+// The same deal, reported by two tools, becomes one insight with both sources. It only joins a deal alert to a deal
+// update when they share a state, at least two distinctive words, and one word that is not just the organization's name
+// (the other party, the hospital), so a different event at the same organization is never swallowed.
 export function mergeInsights(list) {
   const alerts = list.filter((i) => i.origin === 'account-intelligence')
   const others = list.filter((i) => i.origin !== 'account-intelligence')
   const absorbed = new Set(), out = []
   for (const a of alerts) {
     const da = distinctive(`${a.org || ''} ${a.title}`)
+    const orgWords = new Set(nameTokens(a.org))
     const merged = { ...a, sources: [...a.sources], mergedIds: [], dateNotes: [] }
     for (const o of others) {
+      // Only a deal alert joins a deal update. A leadership change, a new building or a closure is its own event even
+      // when it names the same organization.
+      if (a.cat !== 'mna' || o.type !== 'competitive') continue
       if (absorbed.has(o.id) || !o.states.some((s) => a.states.includes(s))) continue
       const shared = [...distinctive(o.title)].filter((t) => da.has(t))
-      if (shared.length < 2) continue
+      if (shared.length < 2 || !shared.some((t) => !orgWords.has(t))) continue
       absorbed.add(o.id)
       merged.mergedIds.push(o.id)
       merged.sources.push(...o.sources)

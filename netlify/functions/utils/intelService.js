@@ -82,10 +82,12 @@ export function buildInsightView(ctx, { now = new Date(), bdr = null, type = nul
     const isTarget = acct ? targetReasons(acct, ctx.stars).length > 0 : false
     const own = acct ? effectiveBdr(acct, ctx.stars, ctx.stateTable) : { bdr: ctx.stateTable[m.states[0]] || null, source: m.states[0] ? 'state table' : null }
     const sc = scoreInsight(m, { today, isTarget })
-    const hint = summaryDateHint(m.whatHappened, m.published, today)
+    // Only an event that has already happened should carry the date of the event. An announcement of something later
+    // (an opening, a closing date, a law taking effect) is allowed to be dated earlier than the day it happens.
+    const hint = /complet|closed|definitive|signed|final/i.test(m.dealStatus || '') ? summaryDateHint(m.whatHappened, m.published, today) : null
     const row = {
       ...m, ...sc, merged: m.mergedIds.length + 1, dateConflict: hint, bdr: own.bdr, bdrSource: own.source,
-      account: acct ? { id: acct.id, name: acct.name, state: acct.state, isTarget, reasons: targetReasons(acct, ctx.stars) } : null, match: { status: match.status, candidates: match.candidates || [] },
+      account: acct ? { id: acct.id, name: acct.name, state: acct.state, isTarget, reasons: targetReasons(acct, ctx.stars) } : null, match: { status: match.status, candidates: match.candidates || [], via: match.via || null },
     }
     if (bdr && bdr !== 'all' && row.bdr !== bdr) continue
     if (type && row.type !== type) continue
@@ -195,6 +197,7 @@ export async function buildHealth(ctx, { store, now = new Date() } = {}) {
   const ambiguous = view.filter((v) => v.match.status === 'ambiguous').map((v) => ({ id: v.id, title: v.title, org: v.org, states: v.states, candidates: v.match.candidates.map((id) => { const a = ctx.byId.get(id); return a ? { id, name: a.name, state: a.state, bdr: a.bdr } : { id } }) }))
   const dateConflicts = view.filter((v) => v.dateConflict).map((v) => ({ id: v.id, title: v.title, recorded: v.dateConflict.recorded, summarySays: v.dateConflict.text, hint: v.dateConflict.hint, origin: v.origin }))
   const accounts = ctx.accounts
+  const dups = findDuplicates(accounts)
   const withSize = accounts.filter((a) => sizeOf(a).status === 'ok').length
   const [importLog, refresh] = store ? await Promise.all([store.getImportLog(), store.getRefreshState()]) : [[], null]
   return {
@@ -205,13 +208,13 @@ export async function buildHealth(ctx, { store, now = new Date() } = {}) {
       byBdr: Object.fromEntries(BDRS.map((b) => [b.key, accounts.filter((a) => resolveBdr(a.bdr) === b.key).length])),
       targetsPendingSize: pendingSize(accounts, ctx.stars).slice(0, 60),
     },
-    duplicates: findDuplicates(accounts).slice(0, 40).map((d) => ({ ...d, ids: d.ids.slice(0, 8) })),
+    duplicates: dups.groups.slice(0, 40).map((d) => ({ ...d, ids: d.ids.slice(0, 8) })), duplicatesHidden: dups.hiddenCommon,
     insights: {
       count: view.length, raw: ctx.items.length, merged: view.filter((v) => v.merged > 1).length,
       byOrigin: ctx.items.reduce((m, i) => { m[i.origin] = (m[i.origin] || 0) + 1; return m }, {}),
       matched: view.filter((v) => v.match.status === 'matched').length, ambiguous, unmatched, dateConflicts,
     },
-    stateTable: ctx.config && ctx.config.stateTable ? { source: 'saved', rows: ctx.config.stateTableRows ?? null, savedAt: clean(ctx.config.stateTableSavedAt), by: clean(ctx.config.stateTableBy) } : { source: 'prompt pack', rows: Object.keys(PACK_STATE_TABLE).length, savedAt: null, by: null },
+    stateTable: ctx.config && ctx.config.stateTable ? { source: 'saved', rows: ctx.config.stateTableRows ?? null, savedAt: clean(ctx.config.stateTableSavedAt), by: clean(ctx.config.stateTableBy) } : { source: 'built in', rows: Object.keys(PACK_STATE_TABLE).length, savedAt: null, by: null },
     importLog: (importLog || []).slice(0, 8), refresh,
   }
 }
