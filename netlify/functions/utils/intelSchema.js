@@ -241,9 +241,9 @@ export function personaOf(title) {
   if (has(/chief medical officer|\bcmo\b|chief physician|chief clinical|chief quality/)) return 'CMO'
   if ((has(/chief executive|\bceo\b/)) && !has(/assistant|associate|to the|deputy/)) return 'CEO'
   if (has(/emergency (medicine|department|services|room|physician)|\bed\b|\ber\b/) && has(/medical director|chair|chief|director|head|physician lead/) && !has(/nurs/)) return 'ED Medical Director/Chair'
-  if (has(/care (management|coordination|transitions|navigation)|case management|utilization|population health|clinical integration/) && has(/director|vp|vice president|manager|head|chief/)) return 'Director of Care Management'
+  if (has(/care (management|coordination|transitions|navigation)|case management|discharge planning|utilization|population health|clinical integration/) && has(/director|vp|vice president|manager|head|chief/)) return 'Director of Care Management'
   if (lead && has(/patient (access|experience|services|financial)|access (center|services|operations)|central scheduling|referral|call center|contact center/)) return 'VP Access'
-  if (lead && has(/strateg|growth|business development|network development|market|planning|innovation|transformation/)) return 'VP Strategy/Growth'
+  if (lead && has(/strateg|growth|business development|network development|marketing|market development|planning|innovation|transformation/)) return 'VP Strategy/Growth'
   if (lead && has(/service line|cardio|heart|vascular|orthop|neuro|spine|oncolog|cancer|surg|women|pediatric|stroke|gastro|digestive|urolog/)) return 'Service Line Director'
   return null
 }

@@ -141,6 +141,7 @@ export function buildMapView(ctx, { bdr = null, targets = true, bdrLed = false, 
   }
   const pins = []
   let unplaced = 0, inScope = 0
+  const missed = []
   const stateStats = {}
   for (const a of ctx.accounts) {
     const own = effectiveBdr(a, ctx.stars, ctx.stateTable)
@@ -152,12 +153,16 @@ export function buildMapView(ctx, { bdr = null, targets = true, bdrLed = false, 
     if (alertsOnly && !recent.has(a.id)) continue
     inScope++
     const pos = locate(a.city, a.state)
-    if (!pos) { unplaced++; continue }
+    if (!pos) { unplaced++; if (missed.length < 400) missed.push({ id: a.id, name: a.name, city: a.city || null, state: a.state, target: isTarget(reasons) }); continue }
     const size = sizeOf(a)
-    pins.push({ id: a.id, name: a.name, state: a.state, city: a.city, x: pos.x, y: pos.y, bdr: own.bdr, reasons, tier: a.tier, er: size.er, beds: size.beds, alerts: recent.has(a.id) ? recent.get(a.id).count : 0, window: recent.has(a.id) ? recent.get(a.id).best : null })
+    pins.push({ id: a.id, name: a.name, state: a.state, city: a.city, x: pos.x, y: pos.y, bdr: own.bdr, reasons, tier: a.tier, er: size.er, beds: size.beds, sizeStatus: size.status, alerts: recent.has(a.id) ? recent.get(a.id).count : 0, window: recent.has(a.id) ? recent.get(a.id).best : null })
   }
   pins.sort((p, q) => (q.alerts ? 1 : 0) - (p.alerts ? 1 : 0) || (q.er || 0) - (p.er || 0) || p.name.localeCompare(q.name))
-  return { pins: pins.slice(0, limit), total: pins.length, truncated: pins.length > limit, unplaced, inScope, stateOwner: ctx.stateTable, stateStats }
+  const perBdr = {}
+  for (const p of pins) perBdr[p.bdr] = (perBdr[p.bdr] || 0) + 1
+  // The accounts that cannot be placed, Gold ones first, so the city can be fixed in HubSpot.
+  const unplacedList = missed.sort((x, y) => Number(y.target) - Number(x.target) || x.name.localeCompare(y.name)).slice(0, 10).map(({ id, name, city, state }) => ({ id, name, city, state }))
+  return { pins: pins.slice(0, limit), total: pins.length, truncated: pins.length > limit, unplaced, unplacedList, perBdr, inScope, stateOwner: ctx.stateTable, stateStats }
 }
 
 // ---------- one account ----------
