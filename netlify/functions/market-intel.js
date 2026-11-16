@@ -48,7 +48,7 @@ export function createHandler(getDeps) {
 
       if (event.httpMethod === 'GET' && path === '/accounts') {
         const ctx2 = await loadContext(d.store)
-        return json(200, { ...buildAccountView(ctx2, { bdr: bdrParam(), targets: qp.targets === '1', q: qp.q, state: qp.state, limit: num(qp.limit, 300, 500), offset: num(qp.offset, 0, 100000) }), portalId: d.portalId, refreshedAt: (ctx2.accountsDoc && ctx2.accountsDoc.refreshedAt) || null })
+        return json(200, { ...buildAccountView(ctx2, { bdr: bdrParam(), targets: qp.targets === '1', bdrLed: qp.bdrLed === '1', q: qp.q, state: qp.state, limit: num(qp.limit, 300, 500), offset: num(qp.offset, 0, 100000) }), portalId: d.portalId, refreshedAt: (ctx2.accountsDoc && ctx2.accountsDoc.refreshedAt) || null })
       }
 
       if (event.httpMethod === 'GET' && path === '/insights') {
