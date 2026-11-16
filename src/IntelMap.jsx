@@ -7,9 +7,11 @@ import { panel, muted, selStyle, Pill, Th, Td, n0, sizeText, linkBtn } from './i
 // accounts wear a gold ring. Accounts whose city cannot be placed are counted below the map, never put in a guessed spot.
 // Clicking a pin (or Enter on it) shows the accounts there and opens the account panel.
 
+// fill is the light wash used when every territory is shown. mid is the stronger colour a territory takes when its BDR is
+// selected, so it stands out from the washed out others. strong is its outline and legend colour.
 const TERR = {
-  'Harley Reed': { label: 'West', fill: '#EFD6C6', strong: '#C9622F' }, 'Abigail Evans': { label: 'Central', fill: '#DDD4EA', strong: '#7B5FB5' },
-  'Chiara Pate': { label: 'Gulf', fill: '#EDE1B6', strong: '#B8901A' }, 'Chris Knapp': { label: 'East', fill: '#CFE3EE', strong: '#2E86AB' },
+  'Harley Reed': { label: 'West', fill: '#EFD6C6', mid: '#DE8F63', strong: '#B8501F' }, 'Abigail Evans': { label: 'Central', fill: '#DDD4EA', mid: '#A28CCB', strong: '#6B4BA8' },
+  'Chiara Pate': { label: 'Gulf', fill: '#EDE1B6', mid: '#D4B64E', strong: '#9C7A0F' }, 'Chris Knapp': { label: 'East', fill: '#CFE3EE', mid: '#6FA8CC', strong: '#1F6F94' },
 }
 const STATE_CODES = Object.keys(STATE_PATHS).sort()
 const CELL = 7 // pins closer than this many map units (a few miles) are grouped into one
@@ -80,8 +82,8 @@ export default function MapView({ api, status, scope, onOpen }) {
         <section style={{ ...panel, padding: 14, flex: '999 1 620px', minWidth: 0 }}>
           <svg viewBox={`0 0 ${MAP_W} ${MAP_H}`} role="img" aria-label="Map of the United States coloured by BDR territory, with accounts as pins" style={{ width: '100%', height: 'auto', display: 'block' }}>
             {STATE_CODES.map((s) => {
-              const owner = data.stateOwner[s], t = TERR[owner]
-              return <path key={s} d={STATE_PATHS[s]} fill={t ? t.fill : '#E4DCC2'} stroke={state === s ? 'var(--text)' : 'var(--bg-panel)'} strokeWidth={state === s ? 2 : 1.2} opacity={dim(owner) ? 0.4 : 1} style={{ cursor: 'pointer' }} onClick={() => setState(state === s ? '' : s)}><title>{s}{t ? `, ${t.label}` : ''}{data.stateStats[s] ? `, ${data.stateStats[s].accounts} shown` : ''}</title></path>
+              const owner = data.stateOwner[s], t = TERR[owner], mine = !!t && !!scope && scope !== 'all' && owner === scope
+              return <path key={s} d={STATE_PATHS[s]} data-territory={mine ? 'selected' : dim(owner) ? 'dimmed' : 'all'} fill={t ? (mine ? t.mid : t.fill) : '#E4DCC2'} stroke={state === s ? 'var(--text)' : mine ? t.strong : 'var(--bg-panel)'} strokeWidth={state === s ? 2 : mine ? 1.1 : 1.2} opacity={dim(owner) ? 0.32 : 1} style={{ cursor: 'pointer' }} onClick={() => setState(state === s ? '' : s)}><title>{s}{t ? `, ${t.label}` : ''}{data.stateStats[s] ? `, ${data.stateStats[s].accounts} shown` : ''}</title></path>
             })}
             {groups.map((g) => {
               const r = g.pins.length > 1 ? 8 : 6, isSel = g.key === sel
@@ -89,7 +91,8 @@ export default function MapView({ api, status, scope, onOpen }) {
               return (
                 <g key={g.key} role="button" tabIndex={0} aria-label={`${label}${g.news ? ', news in the last 30 days' : ''}`} style={{ cursor: 'pointer', outline: 'none' }} onClick={() => setSel(isSel ? null : g.key)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSel(isSel ? null : g.key) } }}>
                   {isSel && <circle cx={g.x} cy={g.y} r={r + 9} fill="#0E6F78" fillOpacity="0.2" stroke="#0E6F78" strokeWidth="2" />}
-                  {(g.gold || g.starred) && <circle cx={g.x} cy={g.y} r={r + 3} fill="none" stroke={g.gold ? '#C9A227' : '#1C6FBE'} strokeWidth="2.5" />}
+                  {(g.gold || g.starred) && <circle cx={g.x} cy={g.y} r={r + 3} fill="none" stroke="#FDFBF5" strokeWidth="5.5" opacity="0.9" />}
+                  {(g.gold || g.starred) && <circle cx={g.x} cy={g.y} r={r + 3} fill="none" stroke={g.gold ? '#B8860B' : '#1C6FBE'} strokeWidth="2.5" />}
                   <circle cx={g.x} cy={g.y} r={r} fill={g.news ? '#201C13' : '#FDFBF5'} stroke={g.news ? '#FDFBF5' : '#201C13'} strokeWidth="1.8" />
                   {g.pins.length > 1 && <text x={g.x} y={g.y + 3.4} textAnchor="middle" fontSize="9.5" fontWeight="700" fill={g.news ? '#fff' : '#201C13'} style={{ pointerEvents: 'none' }}>{g.pins.length}</text>}
                 </g>
@@ -106,7 +109,7 @@ export default function MapView({ api, status, scope, onOpen }) {
             <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--accent-text)', marginBottom: 8 }}>Territories</div>
             {status.bdrs.map((b) => { const t = TERR[b.key]; return (
               <div key={b.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', opacity: dim(b.key) ? 0.5 : 1 }}>
-                <span style={{ width: 16, height: 16, borderRadius: 4, background: t.fill, border: `2px solid ${t.strong}`, flex: 'none' }} />
+                <span style={{ width: 16, height: 16, borderRadius: 4, background: scope === b.key ? t.mid : t.fill, border: `2px solid ${t.strong}`, flex: 'none' }} />
                 <span style={{ flex: 1, fontSize: 13.5, fontWeight: scope === b.key ? 700 : 500 }}>{b.short}, {t.label}</span>
                 <span style={{ fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{perBdr[b.key] || 0} pinned</span>
               </div>) })}
