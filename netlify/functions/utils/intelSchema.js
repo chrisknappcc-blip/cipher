@@ -187,8 +187,8 @@ export function matchTitle(title, states, index) {
   return { status, accountId: primary.e.a.id, candidates: pool.slice(0, 5).map((c) => c.e.a.id), elsewhere: [], via: 'title' }
 }
 
-// Records that are probably the same system: the same words in the name, in at most three states. Different BDRs or
-// states is the serious kind. Returns { groups, hiddenCommon }.
+// Records that are probably the same system: the same words in the name. Different BDRs or states is the serious kind.
+// Same name in several states is listed only with proof (a shared website, or a long name). Returns { groups, hiddenCommon }.
 export function findDuplicates(accounts) {
   const groups = new Map()
   for (const a of accounts || []) {
@@ -202,8 +202,14 @@ export function findDuplicates(accounts) {
   for (const [key, list] of groups) {
     if (list.length < 2) continue
     const bdrs = [...new Set(list.map((x) => x.bdr).filter(Boolean))], states = [...new Set(list.map((x) => x.state || normState(x.stateRaw)).filter(Boolean))]
-    // "Community Medical Center" in twelve states is twelve different hospitals, not one system with copies.
-    if (states.length >= 4) { hiddenCommon++; continue }
+    // The same name in different states is usually different hospitals ("Holy Cross Hospital" in Florida and Maryland).
+    // It is only listed when the records share a website, or the name is long enough to be one system's own
+    // ("Bon Secours Mercy Health"). The same name inside one state is always listed.
+    if (states.length >= 2) {
+      const seen = new Set(); let shared = false
+      for (const x of list) { const d = String(x.domain || '').toLowerCase().replace(/^www\./, ''); if (!d) continue; if (seen.has(d)) shared = true; seen.add(d) }
+      if (!shared && nameTokens(list[0].name).length < 3) { hiddenCommon++; continue }
+    }
     out.push({ key, name: list[0].name, count: list.length, kind: bdrs.length > 1 ? 'several_bdrs' : states.length > 1 ? 'several_states' : 'same_place', bdrs, states, ids: list.map((x) => x.id) })
   }
   const rank = { several_bdrs: 0, several_states: 1, same_place: 2 }
