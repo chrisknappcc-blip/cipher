@@ -224,6 +224,37 @@ export function findDuplicates(accounts) {
 export const pendingSize = (accounts, stars = {}) => (accounts || []).filter((a) => isTarget(targetReasons(a, stars)) && sizeOf(a).status !== 'ok')
   .map((a) => ({ id: a.id, name: a.name, state: a.state, status: sizeOf(a).status }))
 
+// ---------- who to contact ----------
+
+export const PERSONAS = ['CEO', 'CFO', 'CMO', 'CNO', 'VP Access', 'VP Strategy/Growth', 'Service Line Director', 'ED Medical Director/Chair', 'Director of Care Management', 'CMIO/CIO']
+
+// Which of the prompt pack's personas a job title is. Plain keyword rules, in order, so the answer can always be
+// explained. A title that fits none returns null and is simply not counted toward coverage.
+export function personaOf(title) {
+  const t = ` ${String(title || '').toLowerCase().replace(/[^a-z0-9&/ ]+/g, ' ').replace(/\s+/g, ' ').trim()} `
+  if (t.trim() === '') return null
+  const has = (re) => re.test(t)
+  const lead = has(/\b(chief|vp|vice president|svp|evp|director|head|president|chair|officer|administrator)\b/)
+  if (has(/chief (medical |clinical |health )?information|chief digital|chief technology|\bcmio\b|\bcio\b|\bcto\b/)) return 'CMIO/CIO'
+  if (has(/chief nursing|chief nurse|\bcno\b/)) return 'CNO'
+  if (has(/chief financial|\bcfo\b/)) return 'CFO'
+  if (has(/chief medical officer|\bcmo\b|chief physician|chief clinical|chief quality/)) return 'CMO'
+  if ((has(/chief executive|\bceo\b/)) && !has(/assistant|associate|to the|deputy/)) return 'CEO'
+  if (has(/emergency (medicine|department|services|room|physician)|\bed\b|\ber\b/) && has(/medical director|chair|chief|director|head|physician lead/) && !has(/nurs/)) return 'ED Medical Director/Chair'
+  if (has(/care (management|coordination|transitions|navigation)|case management|utilization|population health|clinical integration/) && has(/director|vp|vice president|manager|head|chief/)) return 'Director of Care Management'
+  if (lead && has(/patient (access|experience|services|financial)|access (center|services|operations)|central scheduling|referral|call center|contact center/)) return 'VP Access'
+  if (lead && has(/strateg|growth|business development|network development|market|planning|innovation|transformation/)) return 'VP Strategy/Growth'
+  if (lead && has(/service line|cardio|heart|vascular|orthop|neuro|spine|oncolog|cancer|surg|women|pediatric|stroke|gastro|digestive|urolog/)) return 'Service Line Director'
+  return null
+}
+
+// Contacts grouped under the personas they fit, with the personas nobody covers left empty.
+export function personaCoverage(contacts) {
+  const by = Object.fromEntries(PERSONAS.map((p) => [p, []]))
+  for (const c of contacts || []) { const p = personaOf(c.title); if (p && by[p].length < 5) by[p].push(c) }
+  return PERSONAS.map((persona) => ({ persona, contacts: by[persona] }))
+}
+
 // ---------- state table ----------
 
 // Accepts the rows people paste out of Excel: "NJ, Chris Knapp", "New Jersey<TAB>Chris", with or without a header.

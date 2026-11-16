@@ -8,8 +8,9 @@
 
 import {
   BDRS, PACK_STATE_TABLE, normState, resolveBdr, sizeOf, targetReasons, isTarget, effectiveBdr, buildAccountIndex, matchOrg, matchTitle,
-  findDuplicates, pendingSize, parseStateTable, fromAlert, fromUpdate, mergeInsights, scoreInsight, summaryDateHint,
+  findDuplicates, pendingSize, parseStateTable, fromAlert, fromUpdate, mergeInsights, scoreInsight, summaryDateHint, nameKey, personaCoverage,
 } from './intelSchema.js'
+import { locate } from './intelGeo.js'
 
 export const etDate = (now) => new Date(now).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
 const clean = (v) => (v === undefined ? null : v)
@@ -122,6 +123,91 @@ export function buildAccountView(ctx, { bdr = null, targets = false, bdrLed = fa
   }
   rows.sort((x, y) => (y.reasons.length ? 1 : 0) - (x.reasons.length ? 1 : 0) || tierRank(x.tier) - tierRank(y.tier) || (y.size.er || 0) - (x.size.er || 0) || x.name.localeCompare(y.name))
   return { total: rows.length, rows: rows.slice(offset, offset + limit), counts: { accounts: ctx.accounts.length, targets: targetCount, bdrLedOnly, bdrLedInView, targetsMissingSize: pending, byBdr } }
+}
+
+// ---------- the map ----------
+
+// One pin per account that can be placed. Accounts whose city is not known are counted, not guessed at. Pins are
+// largest first, and capped so a broad view cannot flood the screen.
+export function buildMapView(ctx, { bdr = null, targets = true, bdrLed = false, alertsOnly = false, state = null, now = new Date(), limit = 700 } = {}) {
+  const st = state ? normState(state) : null
+  const recent = new Map()
+  for (const v of buildInsightView(ctx, { now })) {
+    if (!v.account || v.match.via === 'title' || v.ageDays == null || v.ageDays > 30) continue
+    const cur = recent.get(v.account.id) || { count: 0, best: null }
+    cur.count++
+    if (v.window && ['open', 'closing'].includes(v.window.status)) cur.best = cur.best == null ? v.score : Math.max(cur.best, v.score ?? 0)
+    recent.set(v.account.id, cur)
+  }
+  const pins = []
+  let unplaced = 0, inScope = 0
+  const stateStats = {}
+  for (const a of ctx.accounts) {
+    const own = effectiveBdr(a, ctx.stars, ctx.stateTable)
+    const reasons = targetReasons(a, ctx.stars)
+    if (bdr && bdr !== 'all' && (bdr === 'none' ? own.bdr : own.bdr !== bdr)) continue
+    if (targets && !isTarget(reasons, { bdrLed })) continue
+    if (st && a.state !== st) continue
+    if (a.state) { const s = (stateStats[a.state] = stateStats[a.state] || { accounts: 0, alerts: 0 }); s.accounts++; if (recent.has(a.id)) s.alerts++ }
+    if (alertsOnly && !recent.has(a.id)) continue
+    inScope++
+    const pos = locate(a.city, a.state)
+    if (!pos) { unplaced++; continue }
+    const size = sizeOf(a)
+    pins.push({ id: a.id, name: a.name, state: a.state, city: a.city, x: pos.x, y: pos.y, bdr: own.bdr, reasons, tier: a.tier, er: size.er, beds: size.beds, alerts: recent.has(a.id) ? recent.get(a.id).count : 0, window: recent.has(a.id) ? recent.get(a.id).best : null })
+  }
+  pins.sort((p, q) => (q.alerts ? 1 : 0) - (p.alerts ? 1 : 0) || (q.er || 0) - (p.er || 0) || p.name.localeCompare(q.name))
+  return { pins: pins.slice(0, limit), total: pins.length, truncated: pins.length > limit, unplaced, inScope, stateOwner: ctx.stateTable, stateStats }
+}
+
+// ---------- one account ----------
+
+// Everything on one account: its HubSpot fields, the news matched to it, related records, and the part of the score that
+// has data today. The score is deliberately partial: trigger and target are real, size has data but no rule yet, and the
+// rest wait for Phases 4 and 5.
+export function buildAccountDetail(ctx, id, { now = new Date() } = {}) {
+  const a = ctx.byId.get(String(id))
+  if (!a) return null
+  const own = effectiveBdr(a, ctx.stars, ctx.stateTable)
+  const reasons = targetReasons(a, ctx.stars)
+  const size = sizeOf(a)
+  const news = buildInsightView(ctx, { now }).filter((v) => v.account && v.account.id === a.id)
+  const key = nameKey(a.name)
+  const others = key ? ctx.accounts.filter((x) => x.id !== a.id && nameKey(x.name) === key).slice(0, 8).map((x) => ({ id: x.id, name: x.name, state: x.state || x.stateRaw, bdr: x.bdr })) : []
+  const parent = a.parentId && ctx.byId.get(a.parentId)
+  const trigger = news.some((n) => n.match.via !== 'title' && n.ageDays != null && n.ageDays <= 90) ? 20 : 0
+  const target = isTarget(reasons) ? 5 : 0
+  const names = (ctx.accountsDoc && ctx.accountsDoc.ownerNames) || {}
+  return {
+    account: { id: a.id, name: a.name, domain: a.domain, city: a.city, state: a.state, stateRaw: a.stateRaw, bdr: own.bdr, bdrSource: own.source, tier: a.tier, bdrLed: a.bdrLed, reasons, starred: !!(ctx.stars[a.id] && ctx.stars[a.id].star),
+      size: { ...size, discharges: a.size && a.size.discharges, npr: a.size && a.size.npr }, contacts: a.contacts, deals: a.deals, lastContacted: a.lastContacted, definitiveId: a.definitiveId, territoryHs: a.territoryHs, ownerName: a.ownerId ? names[a.ownerId] || null : null },
+    parent: parent ? { id: parent.id, name: parent.name } : null,
+    children: ctx.accounts.filter((x) => x.parentId === a.id).slice(0, 25).map((x) => ({ id: x.id, name: x.name, state: x.state })),
+    otherRecords: others,
+    news: news.slice(0, 25),
+    score: { trigger, target, scored: trigger + target, of: 100, size: { status: size.status === 'ok' ? 'ready' : size.status, er: size.er, beds: size.beds },
+      waiting: ['Competitive pressure nearby', 'Readmission penalty', 'Priority service lines', 'Value based exposure', 'Integration readiness'] },
+  }
+}
+
+export const withContacts = (detail, result, error) => ({ ...detail, contacts: result ? { total: result.total, shown: result.contacts.length, list: result.contacts.slice(0, 12), coverage: personaCoverage(result.contacts) } : null, contactsError: error || null })
+
+// ---------- the home screen ----------
+
+export function buildHomeView(ctx, { bdr = null, now = new Date() } = {}) {
+  const items = buildInsightView(ctx, { now, bdr })
+  const live = items.filter((i) => i.window && (i.window.status === 'open' || i.window.status === 'closing'))
+  const closing = live.filter((i) => i.window.status === 'closing')
+  const best = live.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.window.daysLeft - b.window.daysLeft).slice(0, 5)
+  const watch = items.filter((i) => i.origin === 'front-door-radar' && ['competitive', 'ed_driver'].includes(i.type)).sort((a, b) => String(b.published).localeCompare(String(a.published))).slice(0, 4)
+  let targets = 0, missing = 0
+  for (const a of ctx.accounts) {
+    const own = effectiveBdr(a, ctx.stars, ctx.stateTable)
+    if (bdr && bdr !== 'all' && own.bdr !== bdr) continue
+    const r = targetReasons(a, ctx.stars)
+    if (isTarget(r)) { targets++; if (sizeOf(a).status !== 'ok') missing++ }
+  }
+  return { tiles: { windowsOpen: live.length, withWindow: items.filter((i) => i.window).length, closing: closing.map((i) => ({ id: i.id, org: i.org, daysLeft: i.window.daysLeft })), topScore: best[0] ? { score: best[0].score, org: best[0].org } : null, targets, targetsMissingSize: missing }, best, watch }
 }
 
 // ---------- stars and assignments ----------

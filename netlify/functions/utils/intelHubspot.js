@@ -114,6 +114,17 @@ export function createHubspotReader({ getTokens, setTokens, isTokenValid, client
     return { accounts, cursor: next, total, pages }
   }
 
+  // The people at one company: name, title and last contacted, newest contact first. A search, so still read only.
+  async function fetchContacts(userId, companyId, { limit = 100 } = {}) {
+    const body = {
+      filterGroups: [{ filters: [{ propertyName: 'associations.company', operator: 'EQ', value: String(companyId) }] }],
+      properties: ['firstname', 'lastname', 'jobtitle', 'notes_last_contacted'], sorts: [{ propertyName: 'notes_last_contacted', direction: 'DESCENDING' }], limit,
+    }
+    const d = await call(userId, '/crm/v3/objects/contacts/search', { method: 'POST', body })
+    const contacts = (d.results || []).map((r) => { const p = r.properties || {}; return { id: String(r.id), name: [p.firstname, p.lastname].filter(Boolean).join(' ') || null, title: text(p.jobtitle), lastContacted: text(p.notes_last_contacted) } })
+    return { total: d.total ?? contacts.length, contacts }
+  }
+
   async function fetchOwners(userId) {
     try {
       const d = await call(userId, '/crm/v3/owners?limit=500')
@@ -123,5 +134,5 @@ export function createHubspotReader({ getTokens, setTokens, isTokenValid, client
     }
   }
 
-  return { getToken, call, searchPage, fetchSome, fetchOwners }
+  return { getToken, call, searchPage, fetchSome, fetchOwners, fetchContacts }
 }
