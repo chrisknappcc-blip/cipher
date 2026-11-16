@@ -87,7 +87,7 @@ function AccountsView({ api, status, scope }) {
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 12 }}>
         <input aria-label="Search accounts" placeholder="Search accounts" value={q} onChange={(e) => setQ(e.target.value)} style={{ ...selStyle, minWidth: 220 }} />
         <label style={{ fontSize: 13, display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={targets} onChange={(e) => setTargets(e.target.checked)} />Targets only</label>
-        {targets && <label style={{ fontSize: 13, display: 'inline-flex', gap: 6, alignItems: 'center' }} title="Accounts flagged BDR led in HubSpot that are not on the Gold list"><input type="checkbox" checked={bdrLed} onChange={(e) => setBdrLed(e.target.checked)} />Include BDR led ({data.counts.bdrLedOnly})</label>}
+        {targets && <label style={{ fontSize: 13, display: 'inline-flex', gap: 6, alignItems: 'center' }} title="Accounts flagged BDR led in HubSpot that are not on the Gold list"><input type="checkbox" checked={bdrLed} onChange={(e) => setBdrLed(e.target.checked)} />Include BDR led ({data.counts.bdrLedInView})</label>}
         <span style={muted}>{data.total.toLocaleString()} accounts{data.total > data.rows.length ? `, showing the first ${data.rows.length}` : ''} · {data.counts.targets.toLocaleString()} Gold and starred accounts in all · {data.counts.targetsMissingSize} without size · HubSpot read {fmtWhen(data.refreshedAt)}</span>
       </div>
       {error && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 8 }}>{error}</div>}
