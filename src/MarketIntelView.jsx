@@ -149,7 +149,7 @@ function InsightCard({ it, status }) {
       </div>
       <div style={{ marginTop: 8, fontSize: 12.5 }}>
         {it.account
-          ? <span>Account in HubSpot: <strong>{it.account.name}</strong>{it.account.state ? `, ${it.account.state}` : ''}{it.account.isTarget ? ' · target' : ''}{it.match.status === 'ambiguous' ? ` · could also be one of ${it.match.candidates.length - 1} other records` : ''}</span>
+          ? <span>{it.match.via === 'title' ? 'Possible account in HubSpot' : 'Account in HubSpot'}: <strong>{it.account.name}</strong>{it.account.state ? `, ${it.account.state}` : ''}{it.account.isTarget ? ' · target' : ''}{it.match.status === 'ambiguous' ? ` · could also be one of ${it.match.candidates.length - 1} other records` : ''}{it.match.via === 'title' ? ' · guessed from the headline, so check it' : ''}</span>
           : <span style={muted}>{it.level === 'federal' ? 'Federal item, no single account.' : 'No HubSpot account matched yet.'}</span>}
       </div>
       {it.dateConflict && <div style={{ marginTop: 8, background: '#FBF3DC', border: '1px solid #E3D18F', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, color: '#5C4A05' }}>The recorded date is {fmtDate(it.dateConflict.recorded)}, but the summary says &ldquo;{it.dateConflict.text}&rdquo;. Worth a look.</div>}
@@ -284,12 +284,12 @@ function HealthView({ api, status, onChanged }) {
         {lines.length > 0 && <ul style={{ margin: '10px 0 0', paddingLeft: 18, fontSize: 13, lineHeight: 1.55 }}>{lines.map((l, i) => <li key={i}>{l}</li>)}</ul>}
       </Block>
 
-      <Block title="State to BDR table" note={`Using the ${h.stateTable.source}${h.stateTable.source === 'saved' ? `, ${h.stateTable.rows} states saved ${fmtWhen(h.stateTable.savedAt)}` : ''}. Paste two columns from Excel, a state and a BDR, to replace it. HubSpot's Assigned BDR still comes first for any account that has one.`}>
+      <Block title="State to BDR table" note={`Using ${h.stateTable.source === 'saved' ? `the saved table, ${h.stateTable.rows} states saved ${fmtWhen(h.stateTable.savedAt)}` : 'the built in table, which matches the territory workbook'}. Paste two columns from Excel, a state and a BDR, only if a territory changes. HubSpot's Assigned BDR still comes first for any account that has one.`}>
         <textarea aria-label="State to BDR table" value={csv} onChange={(e) => setCsv(e.target.value)} rows={4} placeholder={'State\tBDR\nNJ\tChris Knapp\nOH\tAbby'} style={{ ...selStyle, width: '100%', fontFamily: 'var(--font-mono)', boxSizing: 'border-box' }} />
         <div style={{ marginTop: 8 }}><button type="button" style={btnStyle(true)} disabled={!csv.trim() || !!busy} onClick={saveTable}>Save table</button></div>
       </Block>
 
-      <Block title="Systems with more than one HubSpot record" note="Same name words, different owners or states first. These are listed for you to merge in HubSpot. Market Intel never merges them.">
+      <Block title="Systems with more than one HubSpot record" note={`Same name words, different owners or states first. These are listed for you to merge in HubSpot. Market Intel never merges them.${h.duplicatesHidden ? ` ${h.duplicatesHidden} names that appear in four or more states (such as Community Medical Center) are different hospitals, so they are left out.` : ''}`}>
         {h.duplicates.length ? <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><Th>Name</Th><Th>Records</Th><Th>Kind</Th><Th>BDRs</Th><Th>States</Th></tr></thead><tbody>
           {h.duplicates.slice(0, 25).map((d) => <tr key={d.key}><Td>{d.name}</Td><Td>{d.count}</Td><Td>{d.kind === 'several_bdrs' ? <Pill color="#8A3F06">Several BDRs</Pill> : d.kind === 'several_states' ? <Pill color="#8A6D0B">Several states</Pill> : <Pill>Same place</Pill>}</Td><Td>{d.bdrs.map((b) => (status.bdrs.find((x) => x.key === b) || {}).short || b).join(', ')}</Td><Td>{d.states.join(', ')}</Td></tr>)}
         </tbody></table></div> : <div style={muted}>None found.</div>}
