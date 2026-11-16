@@ -16,7 +16,7 @@
 export const BDRS = [
   { key: 'Harley Reed', short: 'Harley', territory: 'West' },
   { key: 'Abigail Evans', short: 'Abby', territory: 'Central' },
-  { key: 'Chiara Pate', short: 'Chiara', territory: 'Southern' },
+  { key: 'Chiara Pate', short: 'Chiara', territory: 'Gulf' },
   { key: 'Chris Knapp', short: 'Chris', territory: 'East' },
 ]
 export const bdrShort = (key) => (BDRS.find((b) => b.key === key) || {}).short || key || ''
@@ -29,7 +29,8 @@ export function resolveBdr(v) {
   return hit ? hit.key : null
 }
 
-// The prompt pack's territories. Used until the team's own state table is saved.
+// The four territories, as in the team's Territory Breakout workbook (checked state for state, Nov 16, 2026) and the
+// prompt pack, which agree. HubSpot's Assigned BDR agrees on every state spot checked. Used until a different table is saved.
 const PACK = {
   'Harley Reed': 'AK AZ CA CO HI IA ID KS MN MT ND NE NM NV OK OR SD UT WA WY',
   'Abigail Evans': 'IL IN MI MO NC OH WI WV',
