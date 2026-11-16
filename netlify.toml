@@ -26,6 +26,10 @@ timeout = 26
 [functions."team"]
 timeout = 26
 
+# The Market Intel tab. A HubSpot refresh runs in steps, so each request stays well inside this.
+[functions."market-intel"]
+timeout = 26
+
 # The main function had no limit set, so it ran on Netlify's short default. Work that is slow (the Team roster used
 # to compute everyone's queue in one request) could time out and fail the whole page.
 [functions."hubspot"]
@@ -79,6 +83,11 @@ status = 200
 [[redirects]]
 from = "/api/team/*"
 to = "/.netlify/functions/team/:splat"
+status = 200
+
+[[redirects]]
+from = "/api/intel/*"
+to = "/.netlify/functions/market-intel/:splat"
 status = 200
 
 [[headers]]
