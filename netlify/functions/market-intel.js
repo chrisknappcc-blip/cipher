@@ -42,7 +42,7 @@ export function createHandler(getDeps) {
         return json(200, {
           admin, portalId: d.portalId, bdrs: BDRS, configured: d.config,
           accountsRefreshedAt: (ctx2.accountsDoc && ctx2.accountsDoc.refreshedAt) || null, accountCount: ctx2.accounts.length, insightCount: ctx2.items.length,
-          stateTable: ctx2.config && ctx2.config.stateTable ? 'saved' : 'prompt pack',
+          stateTable: ctx2.config && ctx2.config.stateTable ? 'saved' : 'built in',
         })
       }
 
