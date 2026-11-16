@@ -1,8 +1,15 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { apiFetch } from './api'
+import { panel, muted, selStyle, btnStyle, Pill, Th, Td, SizeCell, InsightCard, REASON_LABEL, TYPE_LABEL, fmtDate, fmtWhen, n0, linkBtn } from './intelUi'
+import HomeView from './IntelHome'
+import MapView from './IntelMap'
+import AccountPanel from './IntelAccount'
 
 // MarketIntelView.jsx: Cipher's Market Intel tab.
 //
+// Home       What is open to reach out about now, the best bets in order, and what is happening nearby.
+// Map        The US by territory, with each account placed by its HubSpot city.
+// Account    One account in one panel, opened from the map, the lists or a news card.
 // Accounts   HubSpot companies for a BDR, with why each is a target, its size from Definitive, and a star and assign
 //            control. Stars and assignments are kept in Cipher. Nothing here writes to HubSpot.
 // Insights   The news from the earlier tools, merged where two tools reported the same event, matched to HubSpot
@@ -12,44 +19,9 @@ import { apiFetch } from './api'
 //
 // Who may do what is decided by the server. Nothing here is the lock.
 
-const panel = { background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)' }
-const muted = { color: 'var(--text-tertiary)', fontSize: 12 }
-const selStyle = { fontSize: 13, padding: '6px 9px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }
-const btnStyle = (primary) => ({ fontSize: 13, fontWeight: 600, padding: '8px 14px', borderRadius: 9, cursor: 'pointer', border: `1px solid ${primary ? 'var(--accent)' : 'var(--border)'}`, background: primary ? 'var(--accent)' : 'var(--bg-panel)', color: primary ? '#fff' : 'var(--text)' })
-const TYPE_LABEL = { account_trigger: 'Account trigger', competitive: 'Competitive', ed_driver: 'ED driver', legislation: 'Legislation', coverage: 'Coverage', utilization: 'Utilization', readmissions: 'Readmissions' }
-const WINDOW_TEXT = { open: (d) => `Window open, ${d} days left`, closing: (d) => `Closing, ${d} days left`, early: () => 'Window not open yet', passed: () => 'Window passed' }
-const WINDOW_COLOR = { open: '#2F5A17', closing: '#8A3F06', early: '#3F4C58', passed: '#8A2820' }
-const REASON_LABEL = { gold: 'Gold', bdr_led: 'BDR led', starred: 'Starred' }
-const fmtDate = (iso) => (iso ? new Date(`${String(iso).slice(0, 10)}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }) : '')
-const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never')
-const n0 = (v) => (v == null ? '' : Number(v).toLocaleString('en-US'))
-
-function Pill({ color = 'var(--text-secondary)', children, title }) {
-  return <span title={title} style={{ fontSize: 11, fontWeight: 600, padding: '2px 9px', borderRadius: 10, whiteSpace: 'nowrap', color, background: `color-mix(in srgb, ${color} 13%, transparent)` }}>{children}</span>
-}
-
-function Th({ children }) { return <th style={{ textAlign: 'left', padding: '8px 10px', fontSize: 11, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--text-secondary)', fontWeight: 700, borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{children}</th> }
-function Td({ children, style }) { return <td style={{ padding: '10px', verticalAlign: 'top', borderBottom: '1px solid var(--border)', fontSize: 13, ...style }}>{children}</td> }
-
-function SizeCell({ size, max }) {
-  if (size.status === 'ok' || size.status === 'partial') {
-    return (
-      <div style={{ minWidth: 150 }}>
-        {size.er != null
-          ? <div><strong style={{ fontVariantNumeric: 'tabular-nums' }}>{n0(size.er)}</strong> <span style={muted}>est. ER visits</span></div>
-          : <div style={muted}>ER visits not in HubSpot</div>}
-        {size.er != null && max > 0 && <div style={{ height: 6, borderRadius: 3, background: 'var(--bg-secondary)', margin: '4px 0 2px', overflow: 'hidden' }}><div style={{ height: 6, width: `${Math.max(3, (size.er / max) * 100)}%`, background: 'var(--accent)' }} /></div>}
-        <div style={muted}>{size.beds != null ? `${n0(size.beds)} beds` : ''}{size.hospitals ? ` · ${size.hospitals} hospitals` : ''}</div>
-      </div>
-    )
-  }
-  if (size.status === 'pending_definitive') return <span style={muted} title="This company has a Definitive ID. The numbers arrive when your Definitive integration reaches it.">Definitive data pending</span>
-  return <span style={muted}>Not in HubSpot</span>
-}
-
 // ---------- Accounts ----------
 
-function AccountsView({ api, status, scope }) {
+function AccountsView({ api, status, scope, onOpen }) {
   const [data, setData] = useState(null)
   const [q, setQ] = useState('')
   const [targets, setTargets] = useState(true)
@@ -98,7 +70,7 @@ function AccountsView({ api, status, scope }) {
             {data.rows.map((r) => (
               <tr key={r.id}>
                 <Td>
-                  <a href={`https://app.hubspot.com/contacts/${data.portalId}/record/0-2/${r.id}`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-text)', fontWeight: 600, textDecoration: 'none' }}>{r.name}</a>
+                  <button type="button" onClick={() => onOpen(r.id)} style={{ ...linkBtn, fontSize: 13 }}>{r.name}</button>
                   <div style={muted}>{[r.city, r.state || r.stateRaw].filter(Boolean).join(', ')}</div>
                 </Td>
                 <Td>{short(r.bdr)}{r.bdrSource === 'hub' && <div style={muted}>set in Cipher</div>}{r.bdrSource === 'state table' && <div style={muted}>from state table</div>}</Td>
@@ -128,40 +100,7 @@ function AccountsView({ api, status, scope }) {
 
 // ---------- Insights ----------
 
-function InsightCard({ it, status }) {
-  const w = it.window
-  const short = (key) => (status.bdrs.find((b) => b.key === key) || {}).short || key
-  return (
-    <div style={{ ...panel, padding: 16 }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginBottom: 8 }}>
-        <Pill color="var(--accent-text)">{TYPE_LABEL[it.type] || it.type}</Pill>
-        {it.states.map((s) => <Pill key={s} color="#1B5A78">{s}</Pill>)}
-        {w && <Pill color={WINDOW_COLOR[w.status]}>{WINDOW_TEXT[w.status](w.daysLeft)}</Pill>}
-        {it.score != null && it.origin === 'account-intelligence' && <Pill color="#8A6D0B" title="News score from 0 to 99">Score {it.score}</Pill>}
-        {it.merged > 1 && <Pill color="#2F5A17" title="Two tools reported this. They are shown as one.">{it.merged} sources merged</Pill>}
-        {it.bdr && <Pill color="var(--text-secondary)">{short(it.bdr)}</Pill>}
-      </div>
-      <div style={{ fontSize: 15, fontWeight: 650, lineHeight: 1.35, marginBottom: 6 }}>{it.title}</div>
-      {it.whatHappened && <p style={{ margin: '0 0 6px', fontSize: 13, lineHeight: 1.55 }}>{it.whatHappened}</p>}
-      {it.whyItMatters && <p style={{ margin: '0 0 8px', fontSize: 13, lineHeight: 1.55, color: 'var(--text-secondary)' }}><strong>Why it matters.</strong> {it.whyItMatters}</p>}
-      {it.openingLine && <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', fontSize: 13, margin: '0 0 8px' }}>&ldquo;{it.openingLine}&rdquo;</div>}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px', alignItems: 'center', fontSize: 12.5, color: 'var(--text-secondary)' }}>
-        {it.leadProduct && <span>Lead: <strong>{it.leadProduct}</strong>{it.secondaryProduct ? `, also ${it.secondaryProduct}` : ''}</span>}
-        {it.sources.map((s, i) => s.url ? <a key={i} href={s.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-text)' }}>{s.name || 'Source'}, {fmtDate(s.date)}</a> : <span key={i}>{s.name}, {fmtDate(s.date)}</span>)}
-        {it.deadline && <span>Takes effect {fmtDate(it.deadline.date)}</span>}
-      </div>
-      <div style={{ marginTop: 8, fontSize: 12.5 }}>
-        {it.account
-          ? <span>{it.match.via === 'title' ? 'Possible account in HubSpot' : 'Account in HubSpot'}: <strong>{it.account.name}</strong>{it.account.state ? `, ${it.account.state}` : ''}{it.account.isTarget ? ' · target' : ''}{it.match.status === 'ambiguous' ? ` · could also be one of ${it.match.candidates.length - 1} other records` : ''}{it.match.via === 'title' ? ' · guessed from the headline, so check it' : ''}</span>
-          : <span style={muted}>{it.level === 'federal' ? 'Federal item, no single account.' : 'No HubSpot account matched yet.'}</span>}
-      </div>
-      {it.dateConflict && <div style={{ marginTop: 8, background: '#FBF3DC', border: '1px solid #E3D18F', borderRadius: 8, padding: '7px 10px', fontSize: 12.5, color: '#5C4A05' }}>The recorded date is {fmtDate(it.dateConflict.recorded)}, but the summary says &ldquo;{it.dateConflict.text}&rdquo;. Worth a look.</div>}
-      {it.dateNotes && it.dateNotes.length > 0 && <div style={{ marginTop: 8, ...muted }}>The other tool dated this {fmtDate(it.dateNotes[0].date)}. Kept {fmtDate(it.dateNotes[0].kept)}.</div>}
-    </div>
-  )
-}
-
-function InsightsView({ api, status, scope }) {
+function InsightsView({ api, status, scope, onOpen }) {
   const [data, setData] = useState(null)
   const [type, setType] = useState('')
   const [days, setDays] = useState('')
@@ -192,7 +131,7 @@ function InsightsView({ api, status, scope }) {
       {error && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 8 }}>{error}</div>}
       {!data && !error && <div style={{ ...panel, padding: 16, ...muted }}>Loading insights...</div>}
       {data && !data.items.length && <div style={{ ...panel, padding: 20, fontSize: 14, lineHeight: 1.55 }}>Nothing to show. {status.admin ? 'Import the earlier tools\u2019 records on the Data health screen.' : 'Ask an admin to import the earlier tools\u2019 records.'}</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{data && data.items.map((it) => <InsightCard key={it.id} it={it} status={status} />)}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{data && data.items.map((it) => <InsightCard key={it.id} it={it} status={status} onOpen={it.match.via === 'title' ? undefined : onOpen} />)}</div>
     </div>
   )
 }
@@ -327,7 +266,8 @@ export default function MarketIntelView({ getToken, currentUserName }) {
   const api = useCallback((path, options) => apiFetch(path, getToken, options), [getToken])
   const [status, setStatus] = useState(null)
   const [error, setError] = useState('')
-  const [view, setView] = useState('accounts')
+  const [view, setView] = useState('home')
+  const [openId, setOpenId] = useState(null)
   const [scope, setScope] = useState(null)
   const [tick, setTick] = useState(0)
 
@@ -349,7 +289,7 @@ export default function MarketIntelView({ getToken, currentUserName }) {
   if (error) return <div style={{ ...panel, padding: 16, color: 'var(--red)' }}>{error}</div>
   if (!status) return <div style={{ ...panel, padding: 16, ...muted }}>Loading Market Intel...</div>
 
-  const tabs = [['accounts', 'Accounts'], ['insights', 'Insights'], ...(status.admin ? [['health', 'Data health']] : [])]
+  const tabs = [['home', 'Home'], ['map', 'Map'], ['accounts', 'Accounts'], ['insights', 'Insights'], ...(status.admin ? [['health', 'Data health']] : [])]
   const segs = [{ key: 'all', label: 'All' }, ...status.bdrs.map((b) => ({ key: b.key, label: `${b.short} · ${b.territory}` }))]
   return (
     <div>
@@ -363,11 +303,14 @@ export default function MarketIntelView({ getToken, currentUserName }) {
         </div>
       </div>
       <div role="tablist" aria-label="Market Intel" style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
-        {tabs.map(([k, label]) => <button key={k} type="button" role="tab" aria-selected={view === k} onClick={() => setView(k)} style={{ ...btnStyle(false), borderRadius: 999, padding: '7px 16px', background: view === k ? 'var(--accent)' : 'var(--bg-secondary)', color: view === k ? '#fff' : 'var(--text-secondary)', borderColor: view === k ? 'var(--accent)' : 'var(--border)' }}>{label}</button>)}
+        {tabs.map(([k, label]) => <button key={k} type="button" role="tab" aria-selected={view === k} onClick={() => { setView(k); setOpenId(null) }} style={{ ...btnStyle(false), borderRadius: 999, padding: '7px 16px', background: view === k ? 'var(--accent)' : 'var(--bg-secondary)', color: view === k ? '#fff' : 'var(--text-secondary)', borderColor: view === k ? 'var(--accent)' : 'var(--border)' }}>{label}</button>)}
       </div>
-      {view === 'accounts' && <AccountsView api={api} status={status} scope={scope} />}
-      {view === 'insights' && <InsightsView api={api} status={status} scope={scope} />}
-      {view === 'health' && status.admin && <HealthView api={api} status={status} onChanged={() => setTick((t) => t + 1)} />}
+      {openId && <AccountPanel api={api} status={status} id={openId} onBack={() => setOpenId(null)} onOpen={setOpenId} />}
+      {!openId && view === 'home' && <HomeView api={api} status={status} scope={scope} userName={currentUserName} onOpen={setOpenId} />}
+      {!openId && view === 'map' && <MapView api={api} status={status} scope={scope} onOpen={setOpenId} />}
+      {!openId && view === 'accounts' && <AccountsView api={api} status={status} scope={scope} onOpen={setOpenId} />}
+      {!openId && view === 'insights' && <InsightsView api={api} status={status} scope={scope} onOpen={setOpenId} />}
+      {!openId && view === 'health' && status.admin && <HealthView api={api} status={status} onChanged={() => setTick((t) => t + 1)} />}
     </div>
   )
 }
