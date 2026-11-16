@@ -102,7 +102,7 @@ export function buildAccountView(ctx, { bdr = null, targets = false, bdrLed = fa
   const st = state ? normState(state) : null
   const rows = []
   const byBdr = {}
-  let targetCount = 0, pending = 0, bdrLedOnly = 0
+  let targetCount = 0, pending = 0, bdrLedOnly = 0, bdrLedInView = 0
   for (const a of ctx.accounts) {
     const own = effectiveBdr(a, ctx.stars, ctx.stateTable)
     const reasons = targetReasons(a, ctx.stars)
@@ -111,6 +111,7 @@ export function buildAccountView(ctx, { bdr = null, targets = false, bdrLed = fa
     const target = isTarget(reasons)
     if (target) { targetCount++; if (size.status !== 'ok') pending++ } else if (reasons.includes('bdr_led')) bdrLedOnly++
     if (bdr && bdr !== 'all') { if (bdr === 'none' ? own.bdr : own.bdr !== bdr) continue }
+    if (!target && reasons.includes('bdr_led')) bdrLedInView++ // counted for the BDR being viewed, so the checkbox says what ticking it adds
     if (targets && !isTarget(reasons, { bdrLed })) continue
     if (st && a.state !== st) continue
     if (needle && !a.name.toLowerCase().includes(needle)) continue
@@ -120,7 +121,7 @@ export function buildAccountView(ctx, { bdr = null, targets = false, bdrLed = fa
     })
   }
   rows.sort((x, y) => (y.reasons.length ? 1 : 0) - (x.reasons.length ? 1 : 0) || tierRank(x.tier) - tierRank(y.tier) || (y.size.er || 0) - (x.size.er || 0) || x.name.localeCompare(y.name))
-  return { total: rows.length, rows: rows.slice(offset, offset + limit), counts: { accounts: ctx.accounts.length, targets: targetCount, bdrLedOnly, targetsMissingSize: pending, byBdr } }
+  return { total: rows.length, rows: rows.slice(offset, offset + limit), counts: { accounts: ctx.accounts.length, targets: targetCount, bdrLedOnly, bdrLedInView, targetsMissingSize: pending, byBdr } }
 }
 
 // ---------- stars and assignments ----------
