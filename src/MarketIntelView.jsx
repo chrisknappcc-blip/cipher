@@ -53,6 +53,7 @@ function AccountsView({ api, status, scope }) {
   const [data, setData] = useState(null)
   const [q, setQ] = useState('')
   const [targets, setTargets] = useState(true)
+  const [bdrLed, setBdrLed] = useState(false)
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState('')
 
@@ -62,10 +63,11 @@ function AccountsView({ api, status, scope }) {
       const qs = new URLSearchParams({ limit: '500' })
       if (scope && scope !== 'all') qs.set('bdr', scope)
       if (targets) qs.set('targets', '1')
+      if (targets && bdrLed) qs.set('bdrLed', '1')
       if (q.trim()) qs.set('q', q.trim())
       setData(await api(`/api/intel/accounts?${qs}`))
     } catch (e) { setError(e.message) }
-  }, [api, scope, targets, q])
+  }, [api, scope, targets, bdrLed, q])
 
   useEffect(() => { const t = setTimeout(load, q ? 300 : 0); return () => clearTimeout(t) }, [load, q])
 
@@ -85,7 +87,8 @@ function AccountsView({ api, status, scope }) {
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 12 }}>
         <input aria-label="Search accounts" placeholder="Search accounts" value={q} onChange={(e) => setQ(e.target.value)} style={{ ...selStyle, minWidth: 220 }} />
         <label style={{ fontSize: 13, display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={targets} onChange={(e) => setTargets(e.target.checked)} />Targets only</label>
-        <span style={muted}>{data.total.toLocaleString()} accounts{data.total > data.rows.length ? `, showing the first ${data.rows.length}` : ''} · {data.counts.targets.toLocaleString()} targets in all · {data.counts.targetsMissingSize} targets without size · HubSpot read {fmtWhen(data.refreshedAt)}</span>
+        {targets && <label style={{ fontSize: 13, display: 'inline-flex', gap: 6, alignItems: 'center' }} title="Accounts flagged BDR led in HubSpot that are not on the Gold list"><input type="checkbox" checked={bdrLed} onChange={(e) => setBdrLed(e.target.checked)} />Include BDR led ({data.counts.bdrLedOnly})</label>}
+        <span style={muted}>{data.total.toLocaleString()} accounts{data.total > data.rows.length ? `, showing the first ${data.rows.length}` : ''} · {data.counts.targets.toLocaleString()} Gold and starred accounts in all · {data.counts.targetsMissingSize} without size · HubSpot read {fmtWhen(data.refreshedAt)}</span>
       </div>
       {error && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 8 }}>{error}</div>}
       <div style={{ ...panel, overflowX: 'auto' }}>
@@ -262,7 +265,7 @@ function HealthView({ api, status, onChanged }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         {tile('HubSpot accounts', n0(a.count), `read ${fmtWhen(a.refreshedAt)}`)}
-        {tile('Targets', n0(a.targets), `${a.targetsPendingSize.length} without size`)}
+        {tile('Gold and starred', n0(a.targets), `${a.targetsPendingSize.length} without size · ${n0(a.bdrLedOnly)} more are BDR led`)}
         {tile('News items', n0(ins.raw), `${ins.merged} merged, ${ins.matched} matched`)}
         {tile('Need a decision', n0(h.duplicates.filter((d) => d.kind === 'several_bdrs').length + ins.ambiguous.length + ins.dateConflicts.length), 'duplicates, unsure matches, dates')}
       </div>
