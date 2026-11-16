@@ -6,6 +6,7 @@ import TeamView from './TeamView'
 import PipelineReviewView from './PipelineReviewView'
 import ResourcesView from './ResourcesView'
 import DebriefsView from './DebriefsView'
+import MarketIntelView from './MarketIntelView'
 
 // ─── Persona detection ────────────────────────────────────────────────────────
 const PERSONAS = {
@@ -2623,6 +2624,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     { key:'gold-command',  label:'Gold Accounts', icon:'star', color:'var(--nav-gold)' },
     { key:'meetings-tracker', label:'Meetings', icon:'calendar', color:'var(--nav-goldoverview)' },
     { key:'debriefs',      label:'Debriefs', icon:'mic',     color:'var(--nav-debriefs, #8A5FBF)' },
+    { key:'market-intel',  label:'Market Intel', icon:'pin', color:'var(--nav-intel, #0E7C86)' },
     { key:'reports',       label:'Reports', icon:'chart',    color:'var(--nav-reports)' },
     { key:'pipeline-review', label:'Pipeline Review', icon:'pipeline', color:'var(--nav-pipeline)' },
     { key:'team',          label:'Team',    icon:'users',    color:'var(--nav-team)' },
@@ -2651,6 +2653,7 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
     if (name === 'users') return <svg {...common}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
     if (name === 'pipeline') return <svg {...common}><path d="M4 4h16v4l-6 6v6l-4-2v-4L4 8z"/></svg>
     if (name === 'book') return <svg {...common}><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+    if (name === 'pin')  return <svg {...common}><path d="M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>
     if (name === 'mic')  return <svg {...common}><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
     return null
   }
@@ -2783,6 +2786,10 @@ export default function Dashboard({ user, theme, toggleTheme, colorTheme, update
 
         {activeTab === 'debriefs' && (
           <DebriefsView getToken={getToken} onUnreadChange={setDebriefUnread} />
+        )}
+
+        {activeTab === 'market-intel' && (
+          <MarketIntelView getToken={getToken} currentUserName={_userFullName} />
         )}
 
         {activeTab === 'dashboard' && (
