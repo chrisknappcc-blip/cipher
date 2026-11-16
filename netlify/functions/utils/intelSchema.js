@@ -100,6 +100,11 @@ export function sizeOf(a) {
   return { status: a && a.definitiveId ? 'pending_definitive' : 'none', er: null, beds: null, hospitals: null }
 }
 
+// A target is a Gold account (including Highest Priority, which Cipher ranks first in the Gold list) or one a BDR starred.
+// The BDR led flag is a different thing: it is shown as a tag and can be included on request, but it does not make an
+// account a target by itself.
+export const isTarget = (reasons, { bdrLed = false } = {}) => reasons.includes('gold') || reasons.includes('starred') || (bdrLed && reasons.includes('bdr_led'))
+
 export const targetReasons = (a, stars = {}) => {
   const out = []
   if (a && a.tier) out.push('gold')
@@ -216,7 +221,7 @@ export function findDuplicates(accounts) {
   return { groups: out.sort((a, b) => rank[a.kind] - rank[b.kind] || b.count - a.count || a.name.localeCompare(b.name)), hiddenCommon }
 }
 
-export const pendingSize = (accounts, stars = {}) => (accounts || []).filter((a) => targetReasons(a, stars).length && sizeOf(a).status !== 'ok')
+export const pendingSize = (accounts, stars = {}) => (accounts || []).filter((a) => isTarget(targetReasons(a, stars)) && sizeOf(a).status !== 'ok')
   .map((a) => ({ id: a.id, name: a.name, state: a.state, status: sizeOf(a).status }))
 
 // ---------- state table ----------

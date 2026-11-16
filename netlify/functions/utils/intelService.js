@@ -7,7 +7,7 @@
 // needs a re-import, and a new HubSpot refresh is picked up straight away.
 
 import {
-  BDRS, PACK_STATE_TABLE, normState, resolveBdr, sizeOf, targetReasons, effectiveBdr, buildAccountIndex, matchOrg, matchTitle,
+  BDRS, PACK_STATE_TABLE, normState, resolveBdr, sizeOf, targetReasons, isTarget, effectiveBdr, buildAccountIndex, matchOrg, matchTitle,
   findDuplicates, pendingSize, parseStateTable, fromAlert, fromUpdate, mergeInsights, scoreInsight, summaryDateHint,
 } from './intelSchema.js'
 
@@ -79,15 +79,15 @@ export function buildInsightView(ctx, { now = new Date(), bdr = null, type = nul
   for (const m of merged) {
     const match = m.origin === 'account-intelligence' ? matchOrg(m.org, m.states[0], ctx.index) : (m.level === 'federal' ? { status: 'none', accountId: null, candidates: [] } : matchTitle(m.title, m.states, ctx.index))
     const acct = match.accountId ? ctx.byId.get(match.accountId) : null
-    const isTarget = acct ? targetReasons(acct, ctx.stars).length > 0 : false
+    const target = acct ? isTarget(targetReasons(acct, ctx.stars)) : false
     const own = acct ? effectiveBdr(acct, ctx.stars, ctx.stateTable) : { bdr: ctx.stateTable[m.states[0]] || null, source: m.states[0] ? 'state table' : null }
-    const sc = scoreInsight(m, { today, isTarget })
+    const sc = scoreInsight(m, { today, isTarget: target })
     // Only an event that has already happened should carry the date of the event. An announcement of something later
     // (an opening, a closing date, a law taking effect) is allowed to be dated earlier than the day it happens.
     const hint = /complet|closed|definitive|signed|final/i.test(m.dealStatus || '') ? summaryDateHint(m.whatHappened, m.published, today) : null
     const row = {
       ...m, ...sc, merged: m.mergedIds.length + 1, dateConflict: hint, bdr: own.bdr, bdrSource: own.source,
-      account: acct ? { id: acct.id, name: acct.name, state: acct.state, isTarget, reasons: targetReasons(acct, ctx.stars) } : null, match: { status: match.status, candidates: match.candidates || [], via: match.via || null },
+      account: acct ? { id: acct.id, name: acct.name, state: acct.state, isTarget: target, reasons: targetReasons(acct, ctx.stars) } : null, match: { status: match.status, candidates: match.candidates || [], via: match.via || null },
     }
     if (bdr && bdr !== 'all' && row.bdr !== bdr) continue
     if (type && row.type !== type) continue
@@ -97,20 +97,21 @@ export function buildInsightView(ctx, { now = new Date(), bdr = null, type = nul
   return out.sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || String(b.published).localeCompare(String(a.published)))
 }
 
-export function buildAccountView(ctx, { bdr = null, targets = false, q = '', state = null, limit = 300, offset = 0 } = {}) {
+export function buildAccountView(ctx, { bdr = null, targets = false, bdrLed = false, q = '', state = null, limit = 300, offset = 0 } = {}) {
   const needle = String(q || '').trim().toLowerCase()
   const st = state ? normState(state) : null
   const rows = []
   const byBdr = {}
-  let targetCount = 0, pending = 0
+  let targetCount = 0, pending = 0, bdrLedOnly = 0
   for (const a of ctx.accounts) {
     const own = effectiveBdr(a, ctx.stars, ctx.stateTable)
     const reasons = targetReasons(a, ctx.stars)
     const size = sizeOf(a)
     byBdr[own.bdr || 'none'] = (byBdr[own.bdr || 'none'] || 0) + 1
-    if (reasons.length) { targetCount++; if (size.status !== 'ok') pending++ }
+    const target = isTarget(reasons)
+    if (target) { targetCount++; if (size.status !== 'ok') pending++ } else if (reasons.includes('bdr_led')) bdrLedOnly++
     if (bdr && bdr !== 'all') { if (bdr === 'none' ? own.bdr : own.bdr !== bdr) continue }
-    if (targets && !reasons.length) continue
+    if (targets && !isTarget(reasons, { bdrLed })) continue
     if (st && a.state !== st) continue
     if (needle && !a.name.toLowerCase().includes(needle)) continue
     rows.push({
@@ -119,7 +120,7 @@ export function buildAccountView(ctx, { bdr = null, targets = false, q = '', sta
     })
   }
   rows.sort((x, y) => (y.reasons.length ? 1 : 0) - (x.reasons.length ? 1 : 0) || tierRank(x.tier) - tierRank(y.tier) || (y.size.er || 0) - (x.size.er || 0) || x.name.localeCompare(y.name))
-  return { total: rows.length, rows: rows.slice(offset, offset + limit), counts: { accounts: ctx.accounts.length, targets: targetCount, targetsMissingSize: pending, byBdr } }
+  return { total: rows.length, rows: rows.slice(offset, offset + limit), counts: { accounts: ctx.accounts.length, targets: targetCount, bdrLedOnly, targetsMissingSize: pending, byBdr } }
 }
 
 // ---------- stars and assignments ----------
@@ -204,7 +205,8 @@ export async function buildHealth(ctx, { store, now = new Date() } = {}) {
     today,
     accounts: {
       count: accounts.length, refreshedAt: (ctx.accountsDoc && ctx.accountsDoc.refreshedAt) || null, refreshedBy: (ctx.accountsDoc && ctx.accountsDoc.by) || null,
-      withBdr: accounts.filter((a) => resolveBdr(a.bdr)).length, withSize, targets: accounts.filter((a) => targetReasons(a, ctx.stars).length).length,
+      withBdr: accounts.filter((a) => resolveBdr(a.bdr)).length, withSize, targets: accounts.filter((a) => isTarget(targetReasons(a, ctx.stars))).length,
+      bdrLedOnly: accounts.filter((a) => { const r = targetReasons(a, ctx.stars); return r.includes('bdr_led') && !isTarget(r) }).length,
       byBdr: Object.fromEntries(BDRS.map((b) => [b.key, accounts.filter((a) => resolveBdr(a.bdr) === b.key).length])),
       targetsPendingSize: pendingSize(accounts, ctx.stars).slice(0, 60),
     },
