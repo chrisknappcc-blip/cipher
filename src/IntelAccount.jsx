@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { panel, muted, selStyle, btnStyle, Pill, REASON_LABEL, InsightCard, fmtDate, n0, linkBtn } from './intelUi'
+import { panel, muted, selStyle, btnStyle, Pill, REASON_LABEL, InsightCard, fmtDate, n0, sizeText, linkBtn } from './intelUi'
 
 // IntelAccount.jsx: one account, the same panel wherever it is opened from (the map, the lists, a news card).
 // It shows what HubSpot holds, the news matched to the account, who to talk to, related records, and the part of the
@@ -101,7 +101,7 @@ export default function AccountPanel({ api, status, id, onBack, onOpen }) {
             <Row k="Assigned BDR" v={`${short(a.bdr)}${a.bdrSource === 'hub' ? ' (set in Cipher)' : a.bdrSource === 'state table' ? ' (from state table)' : ''}`} />
             <Row k="Company owner" v={a.ownerName || 'Not set'} placeholder={!a.ownerName} />
             <Row k="Gold tier" v={tier || 'Not tiered'} placeholder={!tier} />
-            <Row k="Estimated ER visits" v={sz.er != null ? n0(sz.er) : sz.status === 'pending_definitive' ? 'Definitive data pending' : 'Not in HubSpot'} placeholder={sz.er == null} />
+            <Row k="Estimated ER visits" v={sizeText(sz.status, sz.er)} placeholder={sz.er == null} />
             <Row k="Beds" v={sz.beds != null ? n0(sz.beds) : 'Not in HubSpot'} placeholder={sz.beds == null} />
             {sz.hospitals != null && <Row k="Hospitals in network" v={n0(sz.hospitals)} />}
             {sz.discharges != null && <Row k="Discharges" v={n0(sz.discharges)} />}
@@ -115,7 +115,7 @@ export default function AccountPanel({ api, status, id, onBack, onOpen }) {
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: '2px 0 8px' }}><span style={{ fontSize: 34, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{d.score.scored}</span><span style={muted}>of {d.score.of} scored</span></div>
             <Row k="Recent trigger, last 90 days" v={`${d.score.trigger} of 20`} />
             <Row k="Target account" v={`${d.score.target} of 5`} />
-            <Row k="ED volume and size" v={d.score.size.status === 'ready' ? `Data ready: ${n0(d.score.size.er)} ER visits` : d.score.size.status === 'pending_definitive' ? 'Definitive data pending' : 'Not in HubSpot'} placeholder={d.score.size.status !== 'ready'} />
+            <Row k="ED volume and size" v={d.score.size.status === 'ready' ? `Data ready: ${n0(d.score.size.er)} ER visits` : sizeText(d.score.size.status, null)} placeholder={d.score.size.status !== 'ready'} />
             {d.score.waiting.map((w) => <Row key={w} k={w} v="Waiting for data" placeholder />)}
           </Card>
         </div>

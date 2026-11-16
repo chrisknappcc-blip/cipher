@@ -15,6 +15,9 @@ export const fmtDate = (iso) => (iso ? new Date(`${String(iso).slice(0, 10)}T12:
 export const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never')
 export const n0 = (v) => (v == null ? '' : Number(v).toLocaleString('en-US'))
 
+// The size of a company in words, so every screen says the same thing about a missing number.
+export const sizeText = (status, er) => (er != null ? n0(er) : status === 'pending_definitive' ? 'Definitive data pending' : status === 'partial' ? 'ER visits missing' : 'Not in HubSpot')
+
 export function Pill({ color = 'var(--text-secondary)', children, title }) {
   return <span title={title} style={{ fontSize: 11, fontWeight: 600, padding: '2px 9px', borderRadius: 10, whiteSpace: 'nowrap', color, background: `color-mix(in srgb, ${color} 13%, transparent)` }}>{children}</span>
 }

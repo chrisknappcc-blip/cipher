@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { MAP_W, MAP_H, STATE_PATHS } from './usMapData'
-import { panel, muted, selStyle, Pill, Th, Td, n0, linkBtn } from './intelUi'
+import { panel, muted, selStyle, Pill, Th, Td, n0, sizeText, linkBtn } from './intelUi'
 
 // IntelMap.jsx: the Market Intel territory map. States are coloured by the BDR who owns them, and each placeable account
 // is one pin, placed by its HubSpot city. Pins with news in the last 30 days are solid, the rest hollow, and Gold
@@ -59,7 +59,7 @@ export default function MapView({ api, status, scope, onOpen }) {
   }, [data])
   const selected = groups.find((g) => g.key === sel)
   const short = (key) => (status.bdrs.find((b) => b.key === key) || {}).short || key || 'Unassigned'
-  const perBdr = useMemo(() => { const c = {}; for (const p of (data && data.pins) || []) c[p.bdr] = (c[p.bdr] || 0) + 1; return c }, [data])
+  const perBdr = (data && data.perBdr) || {}
 
   if (error && !data) return <div style={{ ...panel, padding: 16, color: 'var(--red)' }}>{error}</div>
   if (!data) return <div style={{ ...panel, padding: 16, ...muted }}>Loading the map...</div>
@@ -97,6 +97,7 @@ export default function MapView({ api, status, scope, onOpen }) {
             })}
           </svg>
           <div style={{ ...muted, display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
+            {data.unplacedList && data.unplacedList.length > 0 && <span style={{ flexBasis: '100%' }}>Not placed, so fix the city in HubSpot: {data.unplacedList.map((u) => `${u.name} (${[u.city, u.state].filter(Boolean).join(', ') || 'no city'})`).join('; ')}{data.unplaced > data.unplacedList.length ? `; and ${data.unplaced - data.unplacedList.length} more` : ''}</span>}
             <span>{'\u25CF'} News in the last 30 days</span><span>{'\u25CB'} No recent news</span><span style={{ color: '#8A6D0B' }}>{'\u25EF'} Gold ring: Gold account</span><span>Click a state to filter. Placement is by city.</span>
           </div>
         </section>
@@ -116,7 +117,7 @@ export default function MapView({ api, status, scope, onOpen }) {
             {selected && selected.pins.slice(0, 8).map((p) => (
               <div key={p.id} style={{ padding: '8px 0', borderTop: '1px solid var(--border)' }}>
                 <button type="button" onClick={() => onOpen(p.id)} style={{ ...linkBtn, fontSize: 14 }}>{p.name}</button>
-                <div style={{ ...muted, margin: '2px 0 4px' }}>{[p.city, p.state].filter(Boolean).join(', ')} · {short(p.bdr)}{p.er != null ? ` · ${n0(p.er)} est. ER visits` : ''}</div>
+                <div style={{ ...muted, margin: '2px 0 4px' }}>{[p.city, p.state].filter(Boolean).join(', ')} · {short(p.bdr)}{p.er != null ? ` · ${n0(p.er)} est. ER visits` : ` · ${sizeText(p.sizeStatus, p.er)}`}</div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{p.tier && <Pill color="#8A6D0B">{p.tier.replace(/^GOLD - /i, 'Gold ').replace(/-/g, ' to ')}</Pill>}{p.reasons.includes('starred') && <Pill color="var(--accent-text)">Starred</Pill>}{p.alerts > 0 && <Pill color="#2F5A17">{p.alerts} news in 30 days</Pill>}</div>
               </div>
             ))}
@@ -128,7 +129,7 @@ export default function MapView({ api, status, scope, onOpen }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 700 }}>
           <thead><tr><Th>On the map</Th><Th>State</Th><Th>Owner</Th><Th>Est. ER visits</Th><Th>News, 30 days</Th></tr></thead>
           <tbody>
-            {data.pins.slice(0, 15).map((p) => <tr key={p.id}><Td><button type="button" onClick={() => onOpen(p.id)} style={linkBtn}>{p.name}</button></Td><Td>{p.state}</Td><Td>{short(p.bdr)}</Td><Td>{p.er != null ? n0(p.er) : <span style={muted}>Not in HubSpot</span>}</Td><Td>{p.alerts || <span style={muted}>0</span>}</Td></tr>)}
+            {data.pins.slice(0, 15).map((p) => <tr key={p.id}><Td><button type="button" onClick={() => onOpen(p.id)} style={linkBtn}>{p.name}</button></Td><Td>{p.state}</Td><Td>{short(p.bdr)}</Td><Td>{p.er != null ? n0(p.er) : <span style={muted}>{sizeText(p.sizeStatus, p.er)}</span>}</Td><Td>{p.alerts || <span style={muted}>0</span>}</Td></tr>)}
             {!data.pins.length && <tr><Td style={{ ...muted, padding: 20 }}>Nothing matches these filters.</Td></tr>}
           </tbody>
         </table>
