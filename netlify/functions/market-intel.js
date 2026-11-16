@@ -5,6 +5,9 @@
 //   GET  /status          who you are here (admin or not), the four BDRs, which settings exist
 //   GET  /accounts        HubSpot companies for a BDR, with target reasons, size and stars
 //   GET  /insights        the news items from the earlier tools, merged, matched to accounts, scored
+//   GET  /home            the home screen for a BDR: windows open, best bets, what is happening nearby
+//   GET  /map             accounts placed on the US map, by BDR, with recent news
+//   GET  /account?id=     one account: HubSpot fields, its news, related records, contacts, partial score
 //   POST /stars           star an account, or assign it to a BDR, inside Cipher (never written to HubSpot)
 //   GET  /health          admins only: imports, duplicates, unmatched items, dates that disagree, size gaps
 //   POST /refresh         admins only: read HubSpot companies, a step at a time (call again until done)
@@ -17,7 +20,7 @@
 import { withAuth } from './utils/auth.js'
 import { isAdmin } from './utils/teamAccess.js'
 import { BDRS, resolveBdr } from './utils/intelSchema.js'
-import { loadContext, buildInsightView, buildAccountView, buildHealth, importRecords, setStar, refreshStep, saveStateTable } from './utils/intelService.js'
+import { loadContext, buildInsightView, buildAccountView, buildHealth, importRecords, setStar, refreshStep, saveStateTable, buildMapView, buildAccountDetail, buildHomeView, withContacts } from './utils/intelService.js'
 import { buildDeps } from './utils/intelDeps.js'
 
 const json = (statusCode, body) => ({ statusCode, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(body) })
@@ -49,6 +52,30 @@ export function createHandler(getDeps) {
       if (event.httpMethod === 'GET' && path === '/accounts') {
         const ctx2 = await loadContext(d.store)
         return json(200, { ...buildAccountView(ctx2, { bdr: bdrParam(), targets: qp.targets === '1', bdrLed: qp.bdrLed === '1', q: qp.q, state: qp.state, limit: num(qp.limit, 300, 500), offset: num(qp.offset, 0, 100000) }), portalId: d.portalId, refreshedAt: (ctx2.accountsDoc && ctx2.accountsDoc.refreshedAt) || null })
+      }
+
+      if (event.httpMethod === 'GET' && path === '/home') {
+        const ctx2 = await loadContext(d.store)
+        return json(200, buildHomeView(ctx2, { bdr: bdrParam(), now }))
+      }
+
+      if (event.httpMethod === 'GET' && path === '/map') {
+        const ctx2 = await loadContext(d.store)
+        return json(200, buildMapView(ctx2, { bdr: bdrParam(), targets: qp.targets !== '0', bdrLed: qp.bdrLed === '1', alertsOnly: qp.alerts === '1', state: qp.state, now }))
+      }
+
+      if (event.httpMethod === 'GET' && path === '/account') {
+        if (!qp.id) return json(400, { error: 'id is required.' })
+        const ctx2 = await loadContext(d.store)
+        const detail = buildAccountDetail(ctx2, qp.id, { now })
+        if (!detail) return json(404, { error: 'That account is not in the HubSpot list. Refresh from HubSpot first.' })
+        // The people come live from HubSpot, on the signed in person's own connection. If that is not possible the panel
+        // still opens and says why the contacts are missing.
+        let result = null, error = null
+        if (d.hubspot && d.hubspot.fetchContacts) {
+          try { result = await d.hubspot.fetchContacts(user.userId, qp.id) } catch (err) { error = err && err.status === 403 ? 'HubSpot is not connected for your account, so contacts are not shown.' : 'Contacts could not be loaded from HubSpot right now.' }
+        }
+        return json(200, withContacts(detail, result, error))
       }
 
       if (event.httpMethod === 'GET' && path === '/insights') {
