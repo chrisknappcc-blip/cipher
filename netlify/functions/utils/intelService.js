@@ -248,7 +248,7 @@ export async function runAnalyzer({ store, d, user, body, now = new Date() }) {
   if (savable) { const ins = fromAlert(record); preview = buildInsightView({ ...ctx, items: [...ctx.items.filter((i) => i.id !== ins.id), ins] }, { now }).find((r) => r.id === ins.id) || null }
   return {
     analysis: result.analysis, record, savable, preview, duplicate: dup ? dupSummary(dup) : null, truncated: text.length > MAX_TEXT,
-    notSavable: savable ? null : 'This does not look like a tracked kind of news: an ED change, a deal, a leadership change or hospital growth. It was not added.',
+    notSavable: savable ? null : 'This does not look like a tracked kind of news: an ED change, a deal, a leadership change, hospital growth, a readmissions or post acute story, or a referral, payment or coverage story. It was not added.',
     usage: { input: result.usage.input, output: result.usage.output, model: result.model },
   }
 }

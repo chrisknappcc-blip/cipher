@@ -36,7 +36,7 @@ const POLICY_STATUS = /enacted|legislature|rule|introduced|pre-?filed|adopted|la
 const POLICY_TEXT = /\b(law|bill|act|legislat\w*|tax credit|payment rates?|medicaid|cms|regulation|treat in place|treat-in-place)\b|\b(hb|sb)\s?\d+/i
 
 export function classOf(item) {
-  if (item.origin === 'account-intelligence') return item.cat === 'mna' ? 'deal' : item.cat === 'ed' ? 'new_site' : item.cat === 'lead' ? 'leadership' : 'growth'
+  if (item.origin === 'account-intelligence') return item.cat === 'mna' ? 'deal' : item.cat === 'ed' ? 'new_site' : item.cat === 'lead' ? 'leadership' : item.cat === 'quality' || item.cat === 'market' ? 'policy' : 'growth'
   const t = String(item.title || '')
   if (POLICY_STATUS.test(String(item.dealStatus || ''))) return 'policy'
   if (item.type === 'ed_driver') return CLOSURE.test(t) ? 'closure' : NEW_SITE.test(t) || /break(s)? ground|tops? off|expansion|relocat/i.test(t) ? 'new_site' : POLICY_TEXT.test(t) ? 'policy' : 'ed_flow'
@@ -71,7 +71,8 @@ const PRODUCTS = {
 export function productsFor(item) {
   if (item.leadProduct) return { lead: item.leadProduct, secondary: item.secondaryProduct || null, derived: false }
   const cls = classOf(item)
-  const key = item.origin === 'account-intelligence' ? `alert_${item.cat === 'mna' ? 'mna' : item.cat === 'ed' ? 'ed' : item.cat === 'lead' ? 'lead' : 'growth'}` : item.type === 'readmissions' ? 'readmissions' : cls
+  const own = item.origin === 'account-intelligence' && item.cat !== 'quality' && item.cat !== 'market'
+  const key = own ? `alert_${item.cat === 'mna' ? 'mna' : item.cat === 'ed' ? 'ed' : item.cat === 'lead' ? 'lead' : 'growth'}` : item.type === 'readmissions' ? 'readmissions' : cls
   const [lead, secondary] = PRODUCTS[key] || PRODUCTS.policy
   return { lead, secondary, derived: true }
 }
@@ -194,7 +195,7 @@ export const angleFor = (product, cls) => (ANGLES[product] && (ANGLES[product][c
 // The words that show a piece of news is about a solution's own subject. Tight on purpose: "discharge" and "follow up" alone
 // would match almost everything.
 const THEME_WORDS = {
-  'ED Connect': /\b(emergency (department|room|care|physician|medicine)|ED visits?|ER visits?|urgent care|freestanding|boarding|ED crowding|ED returns?)\b/i,
+  'ED Connect': /\b(emergency (department|room|care|physician|medicine)|ED visits?|ER visits?|urgent care|freestanding (ED|ER|emergency|urgent care)|boarding|ED crowding|ED returns?)\b/i,
   'Referral IQ': /\b(referrals?|specialists?|specialty (care|access|clinics?)|wait times?|physician (groups?|practices?)|employed physicians?|scheduling)\b/i,
   'Readmission IQ': /readmission|post.?acute|home health|skilled nursing|\bSNF\b|transitions? of care|care transitions|hospital at home|discharge planning|\bHRRP\b|\bEDAC\b/i,
   'CarePath IQ': /out.of.network|leakage|care journey|market share|steer(ing)?|price transparency|network adequacy|service area|patient flow|outmigration|certificate of need|\bCON\b/i,

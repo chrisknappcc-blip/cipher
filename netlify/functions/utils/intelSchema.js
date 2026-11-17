@@ -276,8 +276,10 @@ export function parseStateTable(text) {
 
 // ---------- the news items from the earlier tools ----------
 
-export const WINDOWS = { ed: [0, 21], mna: [7, 45], lead: [3, 30], growth: [0, 60] }
-const BASE = { ed: 40, mna: 35, lead: 25, growth: 20 }
+// quality (readmissions, post acute, care transitions) and market (referral leakage, out of network, payment and coverage rules) came
+// with the article analyzer, so news that is not an ED change, a deal, a leadership change or growth can still be tracked.
+export const WINDOWS = { ed: [0, 21], mna: [7, 45], lead: [3, 30], growth: [0, 60], quality: [0, 60], market: [0, 60] }
+const BASE = { ed: 40, mna: 35, lead: 25, growth: 20, quality: 25, market: 20 }
 const dayNum = (iso) => Math.floor(Date.parse(`${String(iso).slice(0, 10)}T12:00:00Z`) / 86400000)
 
 const eventKind = (a) => {
@@ -285,13 +287,15 @@ const eventKind = (a) => {
   if (a.cat === 'ed') return 'new_ed'
   if (a.cat === 'mna') return /merge/.test(t) ? 'merger' : 'acquisition'
   if (a.cat === 'lead') return 'leadership'
+  if (a.cat === 'quality') return 'quality'
+  if (a.cat === 'market') return 'market'
   return 'growth'
 }
 
 export function fromAlert(a) {
   const st = normState(a.state)
   return {
-    id: `ai:${a._id || a.id}`, origin: 'account-intelligence', type: 'account_trigger', cat: a.cat || null, ed: !!a.ed, eventKind: eventKind(a),
+    id: `ai:${a._id || a.id}`, origin: 'account-intelligence', type: a.cat === 'quality' ? 'readmissions' : a.cat === 'market' ? 'utilization' : 'account_trigger', cat: a.cat || null, ed: !!a.ed, eventKind: eventKind(a),
     org: a.org || null, addedBy: a.addedBy || null, fromArticle: !!a.fromArticle, states: st ? [st] : [], title: a.title || '', whatHappened: a.summary || '', whyItMatters: a.why || '', openingLine: a.hook || '',
     leadProduct: (a.products || [])[0] || null, secondaryProduct: (a.products || [])[1] || null,
     contacts: (a.contacts || []).map((c) => ({ name: c.name || null, title: c.role || null, why: c.why || null })),
