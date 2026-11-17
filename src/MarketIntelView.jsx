@@ -4,10 +4,15 @@ import { panel, muted, selStyle, btnStyle, Pill, Th, Td, SizeCell, InsightCard, 
 import HomeView from './IntelHome'
 import MapView from './IntelMap'
 import AccountPanel from './IntelAccount'
+import CompetitiveView from './IntelCompetitive'
+import Analyzer from './IntelAnalyzer'
 
 // MarketIntelView.jsx: Cipher's Market Intel tab.
 //
 // Home       What is open to reach out about now, the best bets in order, and what is happening nearby.
+// Insights   The news as the pack's four part card, filtered by state, service line and type, with an analyzer that turns a
+//            pasted article into a card.
+// ED and Competitive  Deals, closures and new sites as a timeline, deals still pending flagged Watch, with a state view.
 // Map        The US by territory, with each account placed by its HubSpot city.
 // Account    One account in one panel, opened from the map, the lists or a news card.
 // Accounts   HubSpot companies for a BDR, with why each is a target, its size from Definitive, and a star and assign
@@ -104,7 +109,14 @@ function InsightsView({ api, status, scope, onOpen }) {
   const [data, setData] = useState(null)
   const [type, setType] = useState('')
   const [days, setDays] = useState('')
+  const [state, setState] = useState('')
+  const [line, setLine] = useState('')
+  const [q, setQ] = useState('')
+  const [qNow, setQNow] = useState('')
+  const [openOnly, setOpenOnly] = useState(false)
   const [error, setError] = useState('')
+  const [tick, setTick] = useState(0)
+  useEffect(() => { const t = setTimeout(() => setQNow(q.trim()), 250); return () => clearTimeout(t) }, [q])
   useEffect(() => {
     let live = true
     ;(async () => {
@@ -114,23 +126,36 @@ function InsightsView({ api, status, scope, onOpen }) {
         if (scope && scope !== 'all') qs.set('bdr', scope)
         if (type) qs.set('type', type)
         if (days) qs.set('days', days)
+        if (state) qs.set('state', state)
+        if (line) qs.set('line', line)
+        if (qNow) qs.set('q', qNow)
+        if (openOnly) qs.set('open', '1')
         const d = await api(`/api/intel/insights?${qs}`)
         if (live) setData(d)
       } catch (e) { if (live) setError(e.message) }
     })()
     return () => { live = false }
-  }, [api, scope, type, days])
+  }, [api, scope, type, days, state, line, qNow, openOnly, tick])
 
+  const f = data && data.facets
+  const filtered = !!(type || days || state || line || qNow || openOnly)
+  const clear = () => { setType(''); setDays(''); setState(''); setLine(''); setQ(''); setQNow(''); setOpenOnly(false) }
   return (
     <div>
+      <Analyzer api={api} status={status} onSaved={() => setTick((t) => t + 1)} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 12 }}>
+        <input aria-label="Search the news" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the news" style={{ ...selStyle, width: 190 }} />
+        <select aria-label="State" value={state} onChange={(e) => setState(e.target.value)} style={selStyle}><option value="">All states</option>{f && Object.keys(f.states).sort().map((k) => <option key={k} value={k}>{k} ({f.states[k]})</option>)}</select>
+        <select aria-label="Service line" value={line} onChange={(e) => setLine(e.target.value)} style={selStyle}><option value="">All service lines</option>{f && f.lines.map((l) => <option key={l.key} value={l.key} disabled={!l.count && line !== l.key}>{l.label} ({l.count})</option>)}</select>
         <select aria-label="Type" value={type} onChange={(e) => setType(e.target.value)} style={selStyle}><option value="">All types</option>{Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
         <select aria-label="How recent" value={days} onChange={(e) => setDays(e.target.value)} style={selStyle}><option value="">Any date</option><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option></select>
+        <label style={{ fontSize: 13, display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />Open windows only</label>
+        {filtered && <button type="button" onClick={clear} style={{ ...btnStyle(false), padding: '5px 10px', fontSize: 12.5 }}>Clear filters</button>}
         {data && <span style={muted}>{data.total} items, highest score first. Where two tools reported the same event, it is one card.</span>}
       </div>
       {error && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 8 }}>{error}</div>}
       {!data && !error && <div style={{ ...panel, padding: 16, ...muted }}>Loading insights...</div>}
-      {data && !data.items.length && <div style={{ ...panel, padding: 20, fontSize: 14, lineHeight: 1.55 }}>Nothing to show. {status.admin ? 'Import the earlier tools\u2019 records on the Data health screen.' : 'Ask an admin to import the earlier tools\u2019 records.'}</div>}
+      {data && !data.items.length && <div style={{ ...panel, padding: 20, fontSize: 14, lineHeight: 1.55 }}>{filtered ? 'Nothing matches these filters.' : `Nothing to show. ${status.admin ? 'Import the earlier tools\u2019 records on the Data health screen.' : 'Ask an admin to load the news.'}`}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{data && data.items.map((it) => <InsightCard key={it.id} it={it} status={status} onOpen={it.match.via === 'title' ? undefined : onOpen} />)}</div>
     </div>
   )
@@ -144,6 +169,7 @@ function Block({ title, note, children }) {
 
 function HealthView({ api, status, onChanged }) {
   const [h, setH] = useState(null)
+  const [ai, setAi] = useState(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
@@ -151,7 +177,7 @@ function HealthView({ api, status, onChanged }) {
   const [csv, setCsv] = useState('')
   const [lines, setLines] = useState([])
 
-  const load = useCallback(async () => { try { setError(''); setH(await api('/api/intel/health')) } catch (e) { setError(e.message) } }, [api])
+  const load = useCallback(async () => { try { setError(''); setH(await api('/api/intel/health')); setAi(await api('/api/intel/ai-status').catch(() => null)) } catch (e) { setError(e.message) } }, [api])
   useEffect(() => { load() }, [load])
 
   const refresh = async (restart) => {
@@ -253,6 +279,18 @@ function HealthView({ api, status, onChanged }) {
         {ins.dateConflicts.length ? <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>{ins.dateConflicts.map((d) => <li key={d.id}>{d.title}: dated {fmtDate(d.recorded)}, summary says &ldquo;{d.summarySays}&rdquo;</li>)}</ul> : <div style={muted}>None found.</div>}
       </Block>
 
+      <Block title="News with no source link" note="Every card should point back to its source. Add the link in the tool the news came from, then import again.">
+        {ins.unsourced.length ? <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>{ins.unsourced.map((u) => <li key={u.id}>{u.title}{u.org ? ` (${u.org})` : ''}</li>)}</ul> : <div style={muted}>Every card has a source link.</div>}
+      </Block>
+
+      <Block title="News that may be the same event" note="The same source link, or a headline that is mostly the same words. The scan and the Radar are already merged. These are left for you to judge.">
+        {ins.possibleDuplicates.length ? <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>{ins.possibleDuplicates.map((d, i) => <li key={i}>{d.a.title} <span style={muted}>and</span> {d.b.title}</li>)}</ul> : <div style={muted}>None found.</div>}
+      </Block>
+
+      <Block title="Article analyzer" note="Reads a pasted article with Claude, using Cipher's existing Claude key. A count is kept so the cost is never a surprise.">
+        {ai ? <div style={{ fontSize: 13, lineHeight: 1.7 }}>{ai.enabled ? 'On.' : `Off. ${ai.reason}`} Model {ai.model}. Limit {ai.limitPerDay} analyses per person per day. This month: {ai.month.runs} analyses, {n0(ai.month.input)} tokens read, {n0(ai.month.output)} written, about ${ai.month.estCost.toFixed(2)} (an estimate).</div> : <div style={muted}>Not available.</div>}
+      </Block>
+
       <Block title="Imports so far">
         {h.importLog.length ? <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>{h.importLog.map((l, i) => <li key={i}>{fmtWhen(l.at)}, {l.by || 'someone'}: {l.source}, {l.received} read, {l.added} added, {l.updated} updated</li>)}</ul> : <div style={muted}>Nothing imported yet.</div>}
       </Block>
@@ -289,7 +327,7 @@ export default function MarketIntelView({ getToken, currentUserName }) {
   if (error) return <div style={{ ...panel, padding: 16, color: 'var(--red)' }}>{error}</div>
   if (!status) return <div style={{ ...panel, padding: 16, ...muted }}>Loading Market Intel...</div>
 
-  const tabs = [['home', 'Home'], ['map', 'Map'], ['accounts', 'Accounts'], ['insights', 'Insights'], ...(status.admin ? [['health', 'Data health']] : [])]
+  const tabs = [['home', 'Home'], ['map', 'Map'], ['insights', 'Insights'], ['competitive', 'ED and Competitive'], ['accounts', 'Accounts'], ...(status.admin ? [['health', 'Data health']] : [])]
   const segs = [{ key: 'all', label: 'All' }, ...status.bdrs.map((b) => ({ key: b.key, label: `${b.short} · ${b.territory}` }))]
   return (
     <div>
@@ -308,6 +346,7 @@ export default function MarketIntelView({ getToken, currentUserName }) {
       {openId && <AccountPanel api={api} status={status} id={openId} onBack={() => setOpenId(null)} onOpen={setOpenId} />}
       {!openId && view === 'home' && <HomeView api={api} status={status} scope={scope} userName={currentUserName} onOpen={setOpenId} />}
       {!openId && view === 'map' && <MapView api={api} status={status} scope={scope} onOpen={setOpenId} />}
+      {!openId && view === 'competitive' && <CompetitiveView api={api} status={status} scope={scope} onOpen={setOpenId} />}
       {!openId && view === 'accounts' && <AccountsView api={api} status={status} scope={scope} onOpen={setOpenId} />}
       {!openId && view === 'insights' && <InsightsView api={api} status={status} scope={scope} onOpen={setOpenId} />}
       {!openId && view === 'health' && status.admin && <HealthView api={api} status={status} onChanged={() => setTick((t) => t + 1)} />}
