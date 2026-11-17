@@ -3,6 +3,8 @@
 // The small pieces every Market Intel screen shares: the panel and button styles, pills, table cells, the size cell and the
 // news card. Kept in one place so the map, the account panel, the home screen and the lists all look the same.
 
+import { Component } from 'react'
+
 export const panel = { background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)' }
 export const muted = { color: 'var(--text-tertiary)', fontSize: 12 }
 export const selStyle = { fontSize: 13, padding: '6px 9px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }
@@ -119,4 +121,23 @@ export function InsightCard({ it, status, onOpen }) {
       {it.dateNotes && it.dateNotes.length > 0 && <div style={{ marginTop: 8, ...muted }}>The other tool dated this {fmtDate(it.dateNotes[0].date)}. Kept {fmtDate(it.dateNotes[0].kept)}.</div>}
     </div>
   )
+}
+
+// If a Market Intel screen ever fails to draw (a missing answer from the server, say, while files are still being uploaded), this
+// shows a plain message in its place instead of letting the error blank the whole of Cipher. Switching tabs resets it.
+export class IntelBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null } }
+  static getDerivedStateFromError(error) { return { error } }
+  componentDidCatch(error) { try { console.error('Market Intel screen error:', error) } catch (_) { /* nothing more to do */ } }
+  render() {
+    if (!this.state.error) return this.props.children
+    const why = String((this.state.error && this.state.error.message) || this.state.error).slice(0, 160)
+    return (
+      <div role="alert" style={{ ...panel, padding: 18 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>This screen hit a problem.</div>
+        <div style={{ ...muted, marginBottom: 10 }}>The rest of Cipher is fine. Try another tab, or reload the page. If it keeps happening, tell Chris and mention: {why}</div>
+        <button type="button" onClick={() => this.setState({ error: null })} style={btnStyle(false)}>Try again</button>
+      </div>
+    )
+  }
 }

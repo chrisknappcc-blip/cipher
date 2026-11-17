@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { apiFetch } from './api'
-import { panel, muted, selStyle, btnStyle, Pill, Th, Td, SizeCell, InsightCard, REASON_LABEL, TYPE_LABEL, fmtDate, fmtWhen, n0, linkBtn } from './intelUi'
+import { panel, muted, selStyle, btnStyle, Pill, Th, Td, SizeCell, InsightCard, IntelBoundary, REASON_LABEL, TYPE_LABEL, fmtDate, fmtWhen, n0, linkBtn } from './intelUi'
 import HomeView from './IntelHome'
 import MapView from './IntelMap'
 import AccountPanel from './IntelAccount'
@@ -140,6 +140,7 @@ function InsightsView({ api, status, scope, onOpen }) {
   }, [api, scope, type, days, state, line, qNow, openOnly, tick])
 
   const f = data && data.facets
+  const hasKit = !!(data && Array.isArray(data.products) && data.products.length)
   const filtered = !!(type || days || state || line || qNow || openOnly)
   const clear = () => { setType(''); setDays(''); setState(''); setLine(''); setQ(''); setQNow(''); setOpenOnly(false) }
   return (
@@ -163,8 +164,9 @@ function InsightsView({ api, status, scope, onOpen }) {
       {error && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 8 }}>{error}</div>}
       {!data && !error && <div style={{ ...panel, padding: 16, ...muted }}>Loading insights...</div>}
       {data && !data.items.length && <div style={{ ...panel, padding: 20, fontSize: 14, lineHeight: 1.55 }}>{filtered ? 'Nothing matches these filters.' : `Nothing to show. ${status.admin ? 'Import the earlier tools\u2019 records on the Data health screen.' : 'Ask an admin to load the news.'}`}</div>}
-      {data && data.items.length > 0 && mode === 'solution' && <BySolution items={data.items} kit={data.products} facets={data.facets} status={status} onOpen={onOpen} />}
-      {mode === 'all' && <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{data && data.items.map((it) => <InsightCard key={it.id} it={it} status={status} onOpen={it.match.via === 'title' ? undefined : onOpen} />)}</div>}
+      {data && data.items.length > 0 && mode === 'solution' && !hasKit && <div style={{ ...muted, marginBottom: 10 }}>The solution list did not arrive from the server, so this is every card in one list.</div>}
+      {data && data.items.length > 0 && mode === 'solution' && hasKit && <BySolution items={data.items} kit={data.products} facets={data.facets} status={status} onOpen={onOpen} />}
+      {(mode === 'all' || !hasKit) && <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{data && data.items.map((it) => <InsightCard key={it.id} it={it} status={status} onOpen={it.match.via === 'title' ? undefined : onOpen} />)}</div>}
     </div>
   )
 }
@@ -355,6 +357,7 @@ export default function MarketIntelView({ getToken, currentUserName }) {
       <div role="tablist" aria-label="Market Intel" style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
         {tabs.map(([k, label]) => <button key={k} type="button" role="tab" aria-selected={view === k} onClick={() => { setView(k); setOpenId(null) }} style={{ ...btnStyle(false), borderRadius: 999, padding: '7px 16px', background: view === k ? 'var(--accent)' : 'var(--bg-secondary)', color: view === k ? '#fff' : 'var(--text-secondary)', borderColor: view === k ? 'var(--accent)' : 'var(--border)' }}>{label}</button>)}
       </div>
+      <IntelBoundary key={`${view}|${openId || ''}`}>
       {openId && <AccountPanel api={api} status={status} id={openId} onBack={() => setOpenId(null)} onOpen={setOpenId} />}
       {!openId && view === 'home' && <HomeView api={api} status={status} scope={scope} userName={currentUserName} onOpen={setOpenId} />}
       {!openId && view === 'map' && <MapView api={api} status={status} scope={scope} onOpen={setOpenId} />}
@@ -362,6 +365,7 @@ export default function MarketIntelView({ getToken, currentUserName }) {
       {!openId && view === 'accounts' && <AccountsView api={api} status={status} scope={scope} onOpen={setOpenId} />}
       {!openId && view === 'insights' && <InsightsView api={api} status={status} scope={scope} onOpen={setOpenId} />}
       {!openId && view === 'health' && status.admin && <HealthView api={api} status={status} onChanged={() => setTick((t) => t + 1)} />}
+      </IntelBoundary>
     </div>
   )
 }
