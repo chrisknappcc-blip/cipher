@@ -63,7 +63,7 @@ export default function BySolution({ items, kit, facets, status, onOpen }) {
                 </div>
                 {t && t.thin && (
                   <div role="note" style={{ background: '#FBF3DC', border: '1px solid #E3D18F', borderRadius: 8, padding: '9px 12px', margin: '0 0 12px', fontSize: 13, lineHeight: 1.55, color: '#5C4A05' }}>
-                    Thin coverage. Only {t.evidence} cards are about {k.name} on their own, against {Math.max(...Object.values(thin).map((p) => p.evidence))} for the best covered solution. What is listed as Also was tagged for it by the earlier tool, and is often not about this subject. The daily scan should look for: {k.searchFor}.
+                    Thin coverage. Only {t.evidence} {t.evidence === 1 ? 'card is' : 'cards are'} about {k.name} on {t.evidence === 1 ? 'its' : 'their'} own, against {Math.max(...Object.values(thin).map((p) => p.evidence))} for the best covered solution. What is listed as Also was tagged for it by the earlier tool, and is often not about this subject. The daily scan should look for: {k.searchFor}.
                   </div>
                 )}
                 {total === 0 && <div style={{ ...muted, padding: '8px 0' }}>Nothing matches the filters for {k.name}.</div>}
