@@ -8,7 +8,7 @@ import { panel, muted, selStyle, btnStyle, Pill, InsightCard, CLASS_LABEL, PHASE
 
 const PHASE_COLOR = { watch: '#8A3F06', closed: '#2F5A17', event: 'var(--text-secondary)' }
 
-export default function CompetitiveView({ api, status, scope, onOpen }) {
+export default function CompetitiveView({ api, status, scope, onOpen, refreshKey = 0 }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [state, setState] = useState('')
@@ -31,7 +31,7 @@ export default function CompetitiveView({ api, status, scope, onOpen }) {
       } catch (e) { if (live) setError(e.message) }
     })()
     return () => { live = false }
-  }, [api, scope, state, kind, phase])
+  }, [api, scope, state, kind, phase, refreshKey])
 
   if (error && !data) return <div style={{ ...panel, padding: 16, color: 'var(--red)' }}>{error}</div>
   if (!data) return <div style={{ ...panel, padding: 16, ...muted }}>Loading the timeline...</div>

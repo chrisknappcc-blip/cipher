@@ -13,7 +13,8 @@ import BySolution from './IntelProducts'
 // Home       What is open to reach out about now, the best bets in order, and what is happening nearby.
 // Insights   The news sorted into a collapsible menu for each of the four solutions (or one plain list), as the pack's four part card, filtered by state, service line and type, with an analyzer that turns a
 //            pasted article into a card.
-// ED and Competitive  Deals, closures and new sites as a timeline, deals still pending flagged Watch, with a state view.
+//            Its third view, Competitive moves, is the timeline of deals, closures and new sites, deals still pending flagged Watch,
+//            with your accounts in the same state beside each event and a state view.
 // Map        The US by territory, with each account placed by its HubSpot city.
 // Account    One account in one panel, opened from the map, the lists or a news card.
 // Accounts   HubSpot companies for a BDR, with why each is a target, its size from Definitive, and a star and assign
@@ -106,7 +107,7 @@ function AccountsView({ api, status, scope, onOpen }) {
 
 // ---------- Insights ----------
 
-function InsightsView({ api, status, scope, onOpen }) {
+function InsightsView({ api, status, scope, onOpen, mode, setMode }) {
   const [data, setData] = useState(null)
   const [type, setType] = useState('')
   const [days, setDays] = useState('')
@@ -115,11 +116,11 @@ function InsightsView({ api, status, scope, onOpen }) {
   const [q, setQ] = useState('')
   const [qNow, setQNow] = useState('')
   const [openOnly, setOpenOnly] = useState(false)
-  const [mode, setMode] = useState('solution')
   const [error, setError] = useState('')
   const [tick, setTick] = useState(0)
   useEffect(() => { const t = setTimeout(() => setQNow(q.trim()), 250); return () => clearTimeout(t) }, [q])
   useEffect(() => {
+    if (mode === 'competitive') return undefined // the timeline asks the server for its own list
     let live = true
     ;(async () => {
       setError('')
@@ -137,7 +138,7 @@ function InsightsView({ api, status, scope, onOpen }) {
       } catch (e) { if (live) setError(e.message) }
     })()
     return () => { live = false }
-  }, [api, scope, type, days, state, line, qNow, openOnly, tick])
+  }, [api, scope, type, days, state, line, qNow, openOnly, tick, mode])
 
   const f = data && data.facets
   const hasKit = !!(data && Array.isArray(data.products) && data.products.length)
@@ -149,8 +150,12 @@ function InsightsView({ api, status, scope, onOpen }) {
       <div role="group" aria-label="How to sort the news" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
         <button type="button" aria-pressed={mode === 'solution'} onClick={() => setMode('solution')} style={btnStyle(mode === 'solution')}>By solution</button>
         <button type="button" aria-pressed={mode === 'all'} onClick={() => setMode('all')} style={btnStyle(mode === 'all')}>All news</button>
-        <span style={muted}>{mode === 'solution' ? 'One menu for each of the four solutions, so you can write for one product at a time.' : 'One list, highest score first.'}</span>
+        <button type="button" aria-pressed={mode === 'competitive'} onClick={() => setMode('competitive')} style={btnStyle(mode === 'competitive')}>Competitive moves</button>
+        <span style={muted}>{mode === 'solution' ? 'One menu for each of the four solutions, so you can write for one product at a time.' : mode === 'all' ? 'One list, highest score first.' : 'Deals, closures and new sites as a timeline, newest first. A deal that has not happened yet is flagged Watch.'}</span>
       </div>
+      <IntelBoundary key={mode}>
+      {mode === 'competitive' ? <CompetitiveView api={api} status={status} scope={scope} onOpen={onOpen} refreshKey={tick} /> : (
+      <>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 12 }}>
         <input aria-label="Search the news" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the news" style={{ ...selStyle, width: 190 }} />
         <select aria-label="State" value={state} onChange={(e) => setState(e.target.value)} style={selStyle}><option value="">All states</option>{f && Object.keys(f.states).sort().map((k) => <option key={k} value={k}>{k} ({f.states[k]})</option>)}</select>
@@ -167,6 +172,9 @@ function InsightsView({ api, status, scope, onOpen }) {
       {data && data.items.length > 0 && mode === 'solution' && !hasKit && <div style={{ ...muted, marginBottom: 10 }}>The solution list did not arrive from the server, so this is every card in one list.</div>}
       {data && data.items.length > 0 && mode === 'solution' && hasKit && <BySolution items={data.items} kit={data.products} facets={data.facets} status={status} onOpen={onOpen} />}
       {(mode === 'all' || !hasKit) && <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{data && data.items.map((it) => <InsightCard key={it.id} it={it} status={status} onOpen={it.match.via === 'title' ? undefined : onOpen} />)}</div>}
+      </>
+      )}
+      </IntelBoundary>
     </div>
   )
 }
@@ -320,6 +328,7 @@ export default function MarketIntelView({ getToken, currentUserName }) {
   const [error, setError] = useState('')
   const [view, setView] = useState('home')
   const [openId, setOpenId] = useState(null)
+  const [insMode, setInsMode] = useState('solution')
   const [scope, setScope] = useState(null)
   const [tick, setTick] = useState(0)
 
@@ -341,7 +350,7 @@ export default function MarketIntelView({ getToken, currentUserName }) {
   if (error) return <div style={{ ...panel, padding: 16, color: 'var(--red)' }}>{error}</div>
   if (!status) return <div style={{ ...panel, padding: 16, ...muted }}>Loading Market Intel...</div>
 
-  const tabs = [['home', 'Home'], ['map', 'Map'], ['insights', 'Insights'], ['competitive', 'ED and Competitive'], ['accounts', 'Accounts'], ...(status.admin ? [['health', 'Data health']] : [])]
+  const tabs = [['home', 'Home'], ['map', 'Map'], ['insights', 'Insights'], ['accounts', 'Accounts'], ...(status.admin ? [['health', 'Data health']] : [])]
   const segs = [{ key: 'all', label: 'All' }, ...status.bdrs.map((b) => ({ key: b.key, label: `${b.short} · ${b.territory}` }))]
   return (
     <div>
@@ -361,9 +370,8 @@ export default function MarketIntelView({ getToken, currentUserName }) {
       {openId && <AccountPanel api={api} status={status} id={openId} onBack={() => setOpenId(null)} onOpen={setOpenId} />}
       {!openId && view === 'home' && <HomeView api={api} status={status} scope={scope} userName={currentUserName} onOpen={setOpenId} />}
       {!openId && view === 'map' && <MapView api={api} status={status} scope={scope} onOpen={setOpenId} />}
-      {!openId && view === 'competitive' && <CompetitiveView api={api} status={status} scope={scope} onOpen={setOpenId} />}
       {!openId && view === 'accounts' && <AccountsView api={api} status={status} scope={scope} onOpen={setOpenId} />}
-      {!openId && view === 'insights' && <InsightsView api={api} status={status} scope={scope} onOpen={setOpenId} />}
+      {!openId && view === 'insights' && <InsightsView api={api} status={status} scope={scope} onOpen={setOpenId} mode={insMode} setMode={setInsMode} />}
       {!openId && view === 'health' && status.admin && <HealthView api={api} status={status} onChanged={() => setTick((t) => t + 1)} />}
       </IntelBoundary>
     </div>
