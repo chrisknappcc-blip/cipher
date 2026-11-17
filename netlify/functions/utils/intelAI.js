@@ -8,11 +8,10 @@
 // Nothing here talks to HubSpot. It calls Claude through the helper Cipher already uses, with Cipher's existing key.
 
 import { normState } from './intelSchema.js'
-import { normUrl } from './intelFeed.js'
+import { normUrl, PRODUCT_NAMES } from './intelFeed.js'
 
 const etDate = (now) => new Date(now).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
 
-export const PRODUCT_NAMES = ['ED Connect', 'Referral IQ', 'Readmission IQ', 'CarePath IQ']
 export const CATEGORIES = ['ed', 'mna', 'lead', 'growth', 'other']
 export const SAVABLE = ['ed', 'mna', 'lead', 'growth']
 export const MIN_TEXT = 120

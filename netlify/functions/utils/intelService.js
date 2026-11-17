@@ -11,7 +11,7 @@ import {
   findDuplicates, pendingSize, parseStateTable, fromAlert, fromUpdate, mergeInsights, scoreInsight, summaryDateHint, nameKey, personaCoverage,
 } from './intelSchema.js'
 import { locate } from './intelGeo.js'
-import { serviceLinesOf, classOf, phaseOf, fourPartOf, SERVICE_LINES, isDuplicateNews, monthKey, monthLabel } from './intelFeed.js'
+import { serviceLinesOf, classOf, phaseOf, fourPartOf, productFit, PRODUCT_KIT, PRODUCT_NAMES, SERVICE_LINES, isDuplicateNews, monthKey, monthLabel } from './intelFeed.js'
 import { analyzeArticle, toRecord, cleanRecord, MIN_TEXT, MAX_TEXT, SAVABLE, addUsage, usedToday, summarizeUsage } from './intelAI.js'
 
 export const etDate = (now) => new Date(now).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
@@ -91,7 +91,7 @@ export function buildInsightView(ctx, { now = new Date(), bdr = null, type = nul
     const row = {
       ...m, ...sc, merged: m.mergedIds.length + 1, dateConflict: hint, bdr: own.bdr, bdrSource: own.source,
       account: acct ? { id: acct.id, name: acct.name, state: acct.state, isTarget: target, reasons: targetReasons(acct, ctx.stars) } : null, match: { status: match.status, candidates: match.candidates || [], via: match.via || null },
-      serviceLines: serviceLinesOf(m), eventClass: classOf(m), phase: phaseOf(m), fourPart: fourPartOf(m),
+      serviceLines: serviceLinesOf(m), eventClass: classOf(m), phase: phaseOf(m), fourPart: fourPartOf(m), productFit: productFit(m),
     }
     if (bdr && bdr !== 'all' && row.bdr !== bdr) continue
     if (type && row.type !== type) continue
@@ -138,14 +138,25 @@ export function filterInsights(items, { type = null, days = null, state = null, 
 }
 
 // What the filters can offer, counted over everything in scope, so a choice that would show nothing is easy to see.
+// A solution is thin when few cards are truly about it (its lead news, or news on its own subject): fewer than this many, or fewer
+// than a quarter of what the best covered solution has. The screen says so rather than padding it out.
+export const THIN_BELOW = 10
+export const THIN_SHARE = 0.25
+
 export function facetsOf(items) {
   const states = {}, lines = {}, types = {}
+  const prod = Object.fromEntries(PRODUCT_NAMES.map((p) => [p, { lead: 0, also: 0, theme: 0, open: 0 }]))
   for (const i of items) {
     for (const s of i.states) states[s] = (states[s] || 0) + 1
     for (const l of i.serviceLines) lines[l] = (lines[l] || 0) + 1
     types[i.type] = (types[i.type] || 0) + 1
+    const open = !!(i.window && (i.window.status === 'open' || i.window.status === 'closing'))
+    for (const f of i.productFit || []) { prod[f.product][f.role]++; if (open) prod[f.product].open++ }
   }
-  return { states, types, lines: SERVICE_LINES.map((l) => ({ ...l, count: lines[l.key] || 0 })) }
+  const evidence = (n) => prod[n].lead + prod[n].theme
+  const best = Math.max(0, ...PRODUCT_NAMES.map(evidence))
+  return { states, types, lines: SERVICE_LINES.map((l) => ({ ...l, count: lines[l.key] || 0 })),
+    products: PRODUCT_NAMES.map((name) => ({ name, ...prod[name], searchFor: PRODUCT_KIT.find((k) => k.name === name).searchFor, evidence: evidence(name), thin: evidence(name) < THIN_BELOW || evidence(name) < best * THIN_SHARE })) }
 }
 
 // ---------- ED and competitive: the timeline and the state view ----------
@@ -447,7 +458,7 @@ export async function buildHealth(ctx, { store, now = new Date() } = {}) {
       byOrigin: ctx.items.reduce((m, i) => { m[i.origin] = (m[i.origin] || 0) + 1; return m }, {}),
       matched: view.filter((v) => v.match.status === 'matched').length, ambiguous, unmatched, dateConflicts,
       unsourced: view.filter((v) => !v.fourPart.sourced).slice(0, 20).map((v) => ({ id: v.id, title: v.title, org: v.org, origin: v.origin })),
-      possibleDuplicates: possibleDuplicates(view),
+      possibleDuplicates: possibleDuplicates(view), byProduct: facetsOf(view).products,
     },
     stateTable: ctx.config && ctx.config.stateTable ? { source: 'saved', rows: ctx.config.stateTableRows ?? null, savedAt: clean(ctx.config.stateTableSavedAt), by: clean(ctx.config.stateTableBy) } : { source: 'built in', rows: Object.keys(PACK_STATE_TABLE).length, savedAt: null, by: null },
     importLog: (importLog || []).slice(0, 8), refresh,
