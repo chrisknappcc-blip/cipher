@@ -6,11 +6,12 @@ import MapView from './IntelMap'
 import AccountPanel from './IntelAccount'
 import CompetitiveView from './IntelCompetitive'
 import Analyzer from './IntelAnalyzer'
+import BySolution from './IntelProducts'
 
 // MarketIntelView.jsx: Cipher's Market Intel tab.
 //
 // Home       What is open to reach out about now, the best bets in order, and what is happening nearby.
-// Insights   The news as the pack's four part card, filtered by state, service line and type, with an analyzer that turns a
+// Insights   The news sorted into a collapsible menu for each of the four solutions (or one plain list), as the pack's four part card, filtered by state, service line and type, with an analyzer that turns a
 //            pasted article into a card.
 // ED and Competitive  Deals, closures and new sites as a timeline, deals still pending flagged Watch, with a state view.
 // Map        The US by territory, with each account placed by its HubSpot city.
@@ -114,6 +115,7 @@ function InsightsView({ api, status, scope, onOpen }) {
   const [q, setQ] = useState('')
   const [qNow, setQNow] = useState('')
   const [openOnly, setOpenOnly] = useState(false)
+  const [mode, setMode] = useState('solution')
   const [error, setError] = useState('')
   const [tick, setTick] = useState(0)
   useEffect(() => { const t = setTimeout(() => setQNow(q.trim()), 250); return () => clearTimeout(t) }, [q])
@@ -122,7 +124,7 @@ function InsightsView({ api, status, scope, onOpen }) {
     ;(async () => {
       setError('')
       try {
-        const qs = new URLSearchParams({ limit: '200' })
+        const qs = new URLSearchParams({ limit: '500' })
         if (scope && scope !== 'all') qs.set('bdr', scope)
         if (type) qs.set('type', type)
         if (days) qs.set('days', days)
@@ -143,6 +145,11 @@ function InsightsView({ api, status, scope, onOpen }) {
   return (
     <div>
       <Analyzer api={api} status={status} onSaved={() => setTick((t) => t + 1)} />
+      <div role="group" aria-label="How to sort the news" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <button type="button" aria-pressed={mode === 'solution'} onClick={() => setMode('solution')} style={btnStyle(mode === 'solution')}>By solution</button>
+        <button type="button" aria-pressed={mode === 'all'} onClick={() => setMode('all')} style={btnStyle(mode === 'all')}>All news</button>
+        <span style={muted}>{mode === 'solution' ? 'One menu for each of the four solutions, so you can write for one product at a time.' : 'One list, highest score first.'}</span>
+      </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 12 }}>
         <input aria-label="Search the news" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the news" style={{ ...selStyle, width: 190 }} />
         <select aria-label="State" value={state} onChange={(e) => setState(e.target.value)} style={selStyle}><option value="">All states</option>{f && Object.keys(f.states).sort().map((k) => <option key={k} value={k}>{k} ({f.states[k]})</option>)}</select>
@@ -156,7 +163,8 @@ function InsightsView({ api, status, scope, onOpen }) {
       {error && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 8 }}>{error}</div>}
       {!data && !error && <div style={{ ...panel, padding: 16, ...muted }}>Loading insights...</div>}
       {data && !data.items.length && <div style={{ ...panel, padding: 20, fontSize: 14, lineHeight: 1.55 }}>{filtered ? 'Nothing matches these filters.' : `Nothing to show. ${status.admin ? 'Import the earlier tools\u2019 records on the Data health screen.' : 'Ask an admin to load the news.'}`}</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{data && data.items.map((it) => <InsightCard key={it.id} it={it} status={status} onOpen={it.match.via === 'title' ? undefined : onOpen} />)}</div>
+      {data && data.items.length > 0 && mode === 'solution' && <BySolution items={data.items} kit={data.products} facets={data.facets} status={status} onOpen={onOpen} />}
+      {mode === 'all' && <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{data && data.items.map((it) => <InsightCard key={it.id} it={it} status={status} onOpen={it.match.via === 'title' ? undefined : onOpen} />)}</div>}
     </div>
   )
 }
@@ -285,6 +293,10 @@ function HealthView({ api, status, onChanged }) {
 
       <Block title="News that may be the same event" note="The same source link, or a headline that is mostly the same words. The scan and the Radar are already merged. These are left for you to judge.">
         {ins.possibleDuplicates.length ? <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>{ins.possibleDuplicates.map((d, i) => <li key={i}>{d.a.title} <span style={muted}>and</span> {d.b.title}</li>)}</ul> : <div style={muted}>None found.</div>}
+      </Block>
+
+      <Block title="News coverage by solution" note="How much real news there is for each solution. Lead and same subject cards are about it. Also is only the earlier tool's tag. Thin means far less than the best covered solution, and the daily scan should look for what is listed.">
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.7 }}>{ins.byProduct.map((p) => <li key={p.name}><strong>{p.name}</strong>: {p.lead} lead, {p.theme} on the subject, {p.also} also, {p.open} open windows.{p.thin ? <> <Pill color="#8A3F06">Thin</Pill> Look for: {p.searchFor}.</> : ''}</li>)}</ul>
       </Block>
 
       <Block title="Article analyzer" note="Reads a pasted article with Claude, using Cipher's existing Claude key. A count is kept so the cost is never a surprise.">

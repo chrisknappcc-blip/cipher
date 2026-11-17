@@ -68,6 +68,7 @@ export function InsightCard({ it, status, onOpen }) {
   const w = it.window
   // Older answers carried no four part fields. Fall back to what the card does have, so a card never fails to draw.
   const fp = it.fourPart || { product: { lead: it.leadProduct || null, secondary: it.secondaryProduct || null, derived: false }, contacts: { list: it.contacts || [], derived: false }, opening: { text: it.openingLine || '', derived: false }, sourced: (it.sources || []).some((x) => x && x.url) }
+  const fits = (it.productFit || []).filter((f) => f.product !== fp.product.lead).slice(0, 3)
   const short = (key) => (status.bdrs.find((b) => b.key === key) || {}).short || key
   return (
     <div style={{ ...panel, padding: 16 }}>
@@ -97,6 +98,7 @@ export function InsightCard({ it, status, onOpen }) {
       </Part>
       <Part n={3} title="How Care Continuity closes the loop" suggested={fp && fp.product.derived}>
         <div style={{ fontSize: 13 }}>{fp.product.lead ? <>Lead: <strong>{fp.product.lead}</strong>{fp.product.secondary ? `, also ${fp.product.secondary}` : ''}</> : <span style={muted}>The source does not say.</span>}</div>
+        {fits.length > 0 && <div style={{ ...muted, marginTop: 4 }}>Also fits: {fits.map((f) => `${f.product} (${f.why.charAt(0).toLowerCase()}${f.why.slice(1)})`).join(' \u00B7 ')}</div>}
       </Part>
       <Part n={4} title="Who to contact" suggested={fp && fp.contacts.derived}>
         {fp.contacts.list.length ? fp.contacts.list.map((c, i) => <div key={i} style={{ fontSize: 13, lineHeight: 1.5 }}>{c.name ? <strong>{c.name}, </strong> : null}{c.title}{c.why ? <span style={muted}> {'\u00B7'} {c.why}</span> : null}</div>) : <div style={{ fontSize: 13, ...muted }}>The source does not say.</div>}
