@@ -229,7 +229,7 @@ const dupSummary = (i) => ({ id: i.id, title: i.title, org: i.org || null, publi
 export async function runAnalyzer({ store, d, user, body, now = new Date() }) {
   if (d.aiOff || !d.claude) throw fail(503, d.aiOff ? 'The article analyzer is switched off.' : 'The article analyzer is not set up. ANTHROPIC_API_KEY is missing in Netlify.')
   const text = String((body && body.text) || '').trim(), url = String((body && body.url) || '').trim()
-  if (text.length < MIN_TEXT) throw fail(400, 'Paste the article text, at least a few sentences, so Claude can read it.')
+  if (text.length < MIN_TEXT) throw fail(400, `Paste the article text, at least a short paragraph (${MIN_TEXT} characters), so Claude has facts to use. A headline alone is not enough.`)
   if (!/^https?:\/\/\S+\.\S+/.test(url)) throw fail(400, 'Add the link to the original announcement so the card can point back to its source.')
   const day = etDate(now), uid = userKey(user)
   if (usedToday(await store.getAiUsage(), day, uid) >= d.aiLimit) throw fail(429, `You have used your ${d.aiLimit} analyses for today. It resets tomorrow.`)
@@ -247,7 +247,7 @@ export async function runAnalyzer({ store, d, user, body, now = new Date() }) {
   let preview = null
   if (savable) { const ins = fromAlert(record); preview = buildInsightView({ ...ctx, items: [...ctx.items.filter((i) => i.id !== ins.id), ins] }, { now }).find((r) => r.id === ins.id) || null }
   return {
-    analysis: result.analysis, record, savable, preview, duplicate: dup ? dupSummary(dup) : null, truncated: text.length > MAX_TEXT,
+    analysis: result.analysis, record, savable, preview, duplicate: dup ? dupSummary(dup) : null, truncated: text.length > MAX_TEXT, read: { chars: text.length, words: text.split(/\s+/).filter(Boolean).length },
     notSavable: savable ? null : 'This does not look like a tracked kind of news: an ED change, a deal, a leadership change, hospital growth, a readmissions or post acute story, or a referral, payment or coverage story. It was not added.',
     usage: { input: result.usage.input, output: result.usage.output, model: result.model },
   }

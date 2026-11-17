@@ -14,7 +14,7 @@ const etDate = (now) => new Date(now).toLocaleDateString('en-CA', { timeZone: 'A
 
 export const CATEGORIES = ['ed', 'mna', 'lead', 'growth', 'quality', 'market', 'other']
 export const SAVABLE = ['ed', 'mna', 'lead', 'growth', 'quality', 'market']
-export const MIN_TEXT = 120
+export const MIN_TEXT = 300
 export const MAX_TEXT = 18000
 
 const CONTEXT = 'Care Continuity sells AI powered patient navigation and network intelligence to hospitals and health systems. Products: ED Connect (connects ED and urgent care discharges to in network specialist and primary care follow up and reduces 30 day ED returns; the most popular), Referral IQ (scores open specialist referrals daily so limited capacity goes to the highest clinical risk and downstream value, and keeps patients in network), Readmission IQ (post discharge navigation that catches barriers before a readmission), CarePath IQ (market wide care journey analytics, out of network visits and procedure leakage). The reader is a Care Continuity business development rep who books meetings for VPs.'
@@ -31,6 +31,7 @@ Rules:
 const SCHEMA = `{
  "relevant": boolean (true for any category except other),
  "category": "ed" | "mna" | "lead" | "growth" | "quality" | "market" | "other",
+ "reason": string or null (when relevant is false, one short plain sentence on why, for example that the text is too short or is not one of the kinds above; otherwise null),
  "organization": string (primary health system or hospital) or null,
  "state": two letter US state of the primary organization or null,
  "other_organizations": string[],
@@ -69,7 +70,7 @@ export function parseAnalysis(raw) {
   if (!title || !summary) throw new Error('Claude could not find a clear announcement in that text. Paste the article itself and try again.')
   const category = CATEGORIES.includes(j.category) ? j.category : 'other'
   return {
-    relevant: j.relevant === true && category !== 'other', category,
+    relevant: j.relevant === true && category !== 'other', category, reason: str(j.reason, 300),
     organization: str(j.organization, 140), state: normState(j.state) || null, otherOrganizations: strs(j.other_organizations, 6, 140),
     announcementDate: isoDate(j.announcement_date), title, summary, locations: strs(j.locations, 8, 200), edImpact: j.ed_impact === true,
     why: str(j.why_it_matters, 900), products: (Array.isArray(j.products) ? j.products : []).filter((p) => PRODUCT_NAMES.includes(p)).slice(0, 2),
