@@ -292,7 +292,7 @@ export function fromAlert(a) {
   const st = normState(a.state)
   return {
     id: `ai:${a._id || a.id}`, origin: 'account-intelligence', type: 'account_trigger', cat: a.cat || null, ed: !!a.ed, eventKind: eventKind(a),
-    org: a.org || null, states: st ? [st] : [], title: a.title || '', whatHappened: a.summary || '', whyItMatters: a.why || '', openingLine: a.hook || '',
+    org: a.org || null, addedBy: a.addedBy || null, fromArticle: !!a.fromArticle, states: st ? [st] : [], title: a.title || '', whatHappened: a.summary || '', whyItMatters: a.why || '', openingLine: a.hook || '',
     leadProduct: (a.products || [])[0] || null, secondaryProduct: (a.products || [])[1] || null,
     contacts: (a.contacts || []).map((c) => ({ name: c.name || null, title: c.role || null, why: c.why || null })),
     outreachSteps: a.outreach || a.steps || a.plan || null, locations: a.locations || null,

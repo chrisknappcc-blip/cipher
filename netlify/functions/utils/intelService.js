@@ -11,6 +11,8 @@ import {
   findDuplicates, pendingSize, parseStateTable, fromAlert, fromUpdate, mergeInsights, scoreInsight, summaryDateHint, nameKey, personaCoverage,
 } from './intelSchema.js'
 import { locate } from './intelGeo.js'
+import { serviceLinesOf, classOf, phaseOf, fourPartOf, SERVICE_LINES, isDuplicateNews, monthKey, monthLabel } from './intelFeed.js'
+import { analyzeArticle, toRecord, cleanRecord, MIN_TEXT, MAX_TEXT, SAVABLE, addUsage, usedToday, summarizeUsage } from './intelAI.js'
 
 export const etDate = (now) => new Date(now).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
 const clean = (v) => (v === undefined ? null : v)
@@ -89,6 +91,7 @@ export function buildInsightView(ctx, { now = new Date(), bdr = null, type = nul
     const row = {
       ...m, ...sc, merged: m.mergedIds.length + 1, dateConflict: hint, bdr: own.bdr, bdrSource: own.source,
       account: acct ? { id: acct.id, name: acct.name, state: acct.state, isTarget: target, reasons: targetReasons(acct, ctx.stars) } : null, match: { status: match.status, candidates: match.candidates || [], via: match.via || null },
+      serviceLines: serviceLinesOf(m), eventClass: classOf(m), phase: phaseOf(m), fourPart: fourPartOf(m),
     }
     if (bdr && bdr !== 'all' && row.bdr !== bdr) continue
     if (type && row.type !== type) continue
@@ -123,6 +126,133 @@ export function buildAccountView(ctx, { bdr = null, targets = false, bdrLed = fa
   }
   rows.sort((x, y) => (y.reasons.length ? 1 : 0) - (x.reasons.length ? 1 : 0) || tierRank(x.tier) - tierRank(y.tier) || (y.size.er || 0) - (x.size.er || 0) || x.name.localeCompare(y.name))
   return { total: rows.length, rows: rows.slice(offset, offset + limit), counts: { accounts: ctx.accounts.length, targets: targetCount, bdrLedOnly, bdrLedInView, targetsMissingSize: pending, byBdr } }
+}
+
+// ---------- filtering the feed ----------
+
+export function filterInsights(items, { type = null, days = null, state = null, line = null, q = '', openOnly = false } = {}) {
+  const st = state ? normState(state) : null
+  const needle = String(q || '').trim().toLowerCase()
+  return items.filter((i) => (!type || i.type === type) && (!days || i.ageDays == null || i.ageDays <= days) && (!st || i.states.includes(st)) && (!line || i.serviceLines.includes(line))
+    && (!openOnly || (i.window && (i.window.status === 'open' || i.window.status === 'closing'))) && (!needle || `${i.title} ${i.org || ''} ${i.whatHappened}`.toLowerCase().includes(needle)))
+}
+
+// What the filters can offer, counted over everything in scope, so a choice that would show nothing is easy to see.
+export function facetsOf(items) {
+  const states = {}, lines = {}, types = {}
+  for (const i of items) {
+    for (const s of i.states) states[s] = (states[s] || 0) + 1
+    for (const l of i.serviceLines) lines[l] = (lines[l] || 0) + 1
+    types[i.type] = (types[i.type] || 0) + 1
+  }
+  return { states, types, lines: SERVICE_LINES.map((l) => ({ ...l, count: lines[l.key] || 0 })) }
+}
+
+// ---------- ED and competitive: the timeline and the state view ----------
+
+const TIMELINE_CLASSES = ['deal', 'closure', 'new_site', 'ed_flow']
+const names = (list) => (list.length <= 1 ? list.join('') : `${list.slice(0, -1).join(', ')} or ${list[list.length - 1]}`)
+const QUESTION = {
+  deal: (n) => `Could this change where patients and referrals go for ${n}?`,
+  closure: (n) => `Could this shift ED volume to ${n}?`, ed_flow: (n) => `Could this shift ED volume to ${n}?`,
+  new_site: (n) => `Could this draw low acuity volume and referrals away from ${n}?`,
+}
+
+// Deals, closures, new sites and ED volume news, newest first and grouped by month. A pending deal is Watch. Beside each
+// event are the Gold and starred accounts in the same state, framed as a question because a source rarely confirms impact.
+// News carries no city, so this is a state view, not a metro view.
+export function buildCompetitiveView(ctx, { bdr = null, state = null, kind = null, phase = null, now = new Date() } = {}) {
+  const st = state ? normState(state) : null
+  const all = buildInsightView(ctx, { now, bdr }).filter((i) => TIMELINE_CLASSES.includes(i.eventClass))
+  const facets = { states: {}, kinds: {}, phases: {} }
+  for (const i of all) {
+    for (const s of i.states) facets.states[s] = (facets.states[s] || 0) + 1
+    facets.kinds[i.eventClass] = (facets.kinds[i.eventClass] || 0) + 1
+    facets.phases[i.phase] = (facets.phases[i.phase] || 0) + 1
+  }
+  const rows = all.filter((i) => (!st || i.states.includes(st)) && (!kind || i.eventClass === kind) && (!phase || i.phase === phase))
+  const byState = new Map()
+  for (const a of ctx.accounts) {
+    if (!a.state) continue
+    const own = effectiveBdr(a, ctx.stars, ctx.stateTable)
+    if (bdr && bdr !== 'all' && own.bdr !== bdr) continue
+    if (!isTarget(targetReasons(a, ctx.stars))) continue
+    if (!byState.has(a.state)) byState.set(a.state, [])
+    byState.get(a.state).push(a)
+  }
+  for (const list of byState.values()) list.sort((x, y) => (sizeOf(y).er || 0) - (sizeOf(x).er || 0) || x.name.localeCompare(y.name))
+  const events = rows.map((i) => {
+    const near = []
+    for (const s of i.states) for (const a of byState.get(s) || []) if (!(i.account && i.account.id === a.id) && !near.some((n) => n.id === a.id)) near.push(a)
+    const top = near.slice(0, 4).map((a) => ({ id: a.id, name: a.name, state: a.state }))
+    return { ...i, nearby: { total: near.length, accounts: top, states: i.states, question: top.length ? QUESTION[i.eventClass](names(top.map((a) => a.name))) : null } }
+  }).sort((a, b) => String(b.published).localeCompare(String(a.published)) || (b.score ?? 0) - (a.score ?? 0))
+  const months = []
+  for (const e of events) {
+    const k = monthKey(e.published)
+    let m = months[months.length - 1]
+    if (!m || m.key !== k) { m = { key: k, label: monthLabel(k), events: [] }; months.push(m) }
+    m.events.push(e)
+  }
+  const stateView = st ? { state: st, accounts: (byState.get(st) || []).slice(0, 12).map((a) => { const sz = sizeOf(a); return { id: a.id, name: a.name, city: a.city, er: sz.er, sizeStatus: sz.status } }), accountTotal: (byState.get(st) || []).length, events: rows.length, watch: rows.filter((r) => r.phase === 'watch').length, closed: rows.filter((r) => r.phase === 'closed').length } : null
+  return { months, summary: { events: events.length, watch: events.filter((e) => e.phase === 'watch').length, closed: events.filter((e) => e.phase === 'closed').length, byKind: events.reduce((m, e) => { m[e.eventClass] = (m[e.eventClass] || 0) + 1; return m }, {}) }, facets, stateView }
+}
+
+// ---------- the article analyzer ----------
+
+const fail = (status, message, extra = {}) => Object.assign(new Error(message), { status, ...extra })
+const userKey = (user) => (user && (user.sub || user.email)) || 'unknown'
+
+export async function aiStatus({ store, d, user, now = new Date() }) {
+  const day = etDate(now), doc = await store.getAiUsage()
+  return {
+    enabled: !d.aiOff && !!d.claude, reason: d.aiOff ? 'The analyzer is switched off (MARKET_INTEL_AI).' : !d.claude ? 'The analyzer needs ANTHROPIC_API_KEY set in Netlify.' : null,
+    model: d.model, limitPerDay: d.aiLimit, usedToday: usedToday(doc, day, userKey(user)), month: summarizeUsage(doc, day, d.prices || {}),
+    note: 'Cost is an estimate from token counts, at the rates set for the model.',
+  }
+}
+
+const dupSummary = (i) => ({ id: i.id, title: i.title, org: i.org || null, published: i.published || null, source: (i.sources && i.sources[0]) || null })
+
+// Reads one pasted article with Claude and returns what it found, as a card ready to save. Nothing is saved here.
+export async function runAnalyzer({ store, d, user, body, now = new Date() }) {
+  if (d.aiOff || !d.claude) throw fail(503, d.aiOff ? 'The article analyzer is switched off.' : 'The article analyzer is not set up. ANTHROPIC_API_KEY is missing in Netlify.')
+  const text = String((body && body.text) || '').trim(), url = String((body && body.url) || '').trim()
+  if (text.length < MIN_TEXT) throw fail(400, 'Paste the article text, at least a few sentences, so Claude can read it.')
+  if (!/^https?:\/\/\S+\.\S+/.test(url)) throw fail(400, 'Add the link to the original announcement so the card can point back to its source.')
+  const day = etDate(now), uid = userKey(user)
+  if (usedToday(await store.getAiUsage(), day, uid) >= d.aiLimit) throw fail(429, `You have used your ${d.aiLimit} analyses for today. It resets tomorrow.`)
+  let result
+  try { result = await analyzeArticle({ claude: d.claude, model: d.model, text, url }) } catch (err) {
+    if (/readable answer|clear announcement/.test(String(err && err.message))) throw fail(422, err.message)
+    throw fail(502, 'Claude could not be reached right now. Try again in a minute.')
+  }
+  await store.updateAiUsage((doc) => addUsage(doc, { day, uid, input: result.usage.input, output: result.usage.output }))
+  const record = toRecord(result.analysis, { url, sourceName: body.sourceName, date: body.date, user, now })
+  const ctx = await loadContext(store)
+  const id = `ai:${record._id}`
+  const dup = ctx.items.filter((i) => i.id !== id).find((i) => isDuplicateNews({ title: record.title, org: record.org, url }, i))
+  const savable = result.analysis.relevant && SAVABLE.includes(record.cat)
+  let preview = null
+  if (savable) { const ins = fromAlert(record); preview = buildInsightView({ ...ctx, items: [...ctx.items.filter((i) => i.id !== ins.id), ins] }, { now }).find((r) => r.id === ins.id) || null }
+  return {
+    analysis: result.analysis, record, savable, preview, duplicate: dup ? dupSummary(dup) : null, truncated: text.length > MAX_TEXT,
+    notSavable: savable ? null : 'This does not look like a tracked kind of news: an ED change, a deal, a leadership change or hospital growth. It was not added.',
+    usage: { input: result.usage.input, output: result.usage.output, model: result.model },
+  }
+}
+
+// Saves an analyzed article to the feed. The record comes back from the browser, so it is rebuilt from allowed fields only,
+// and the person saving is taken from their sign in, never from what the page says.
+export async function saveAnalysis({ store, user, body, now = new Date() }) {
+  const record = cleanRecord(body && body.record, user)
+  record.date = record.date || etDate(now)
+  const ctx = await loadContext(store)
+  const id = `ai:${record._id}`
+  const dup = ctx.items.filter((i) => i.id !== id).find((i) => isDuplicateNews({ title: record.title, org: record.org, url: record.sourceUrl }, i))
+  if (dup && !(body && body.force === true)) throw fail(409, 'This looks like news that is already in the feed.', { duplicate: dupSummary(dup) })
+  const entry = await importRecords({ store, source: 'alerts', records: [record], user, now })
+  return { id, replaced: entry.updated > 0, entry }
 }
 
 // ---------- the map ----------
@@ -283,6 +413,15 @@ export async function saveStateTable({ store, csv, user }) {
 
 // ---------- Data health ----------
 
+// Cards that may be the same event even after the merge: the same source link, or a headline that is mostly the same words.
+function possibleDuplicates(view) {
+  const out = []
+  for (let a = 0; a < view.length && out.length < 15; a++) for (let b = a + 1; b < view.length && out.length < 15; b++) {
+    if (isDuplicateNews(view[a], view[b])) out.push({ a: { id: view[a].id, title: view[a].title, org: view[a].org }, b: { id: view[b].id, title: view[b].title, org: view[b].org } })
+  }
+  return out
+}
+
 export async function buildHealth(ctx, { store, now = new Date() } = {}) {
   const today = etDate(now)
   const view = buildInsightView(ctx, { now })
@@ -307,6 +446,8 @@ export async function buildHealth(ctx, { store, now = new Date() } = {}) {
       count: view.length, raw: ctx.items.length, merged: view.filter((v) => v.merged > 1).length,
       byOrigin: ctx.items.reduce((m, i) => { m[i.origin] = (m[i.origin] || 0) + 1; return m }, {}),
       matched: view.filter((v) => v.match.status === 'matched').length, ambiguous, unmatched, dateConflicts,
+      unsourced: view.filter((v) => !v.fourPart.sourced).slice(0, 20).map((v) => ({ id: v.id, title: v.title, org: v.org, origin: v.origin })),
+      possibleDuplicates: possibleDuplicates(view),
     },
     stateTable: ctx.config && ctx.config.stateTable ? { source: 'saved', rows: ctx.config.stateTableRows ?? null, savedAt: clean(ctx.config.stateTableSavedAt), by: clean(ctx.config.stateTableBy) } : { source: 'built in', rows: Object.keys(PACK_STATE_TABLE).length, savedAt: null, by: null },
     importLog: (importLog || []).slice(0, 8), refresh,

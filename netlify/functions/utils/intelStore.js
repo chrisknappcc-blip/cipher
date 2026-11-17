@@ -69,6 +69,9 @@ export function createIntelStore({ account, container, sas, fetchImpl = fetch, s
     getInsights: () => get('intel/insights.json', null),
     putInsights: (doc) => putJson('intel/insights.json', doc),
 
+    getAiUsage: () => get('intel/ai-usage.json', { days: {} }),
+    updateAiUsage: (fn) => updateJson('intel/ai-usage.json', (d) => fn(d || { days: {} }), { fallback: { days: {} } }),
+
     getStars: () => get('intel/stars.json', {}),
     updateStars: (fn) => updateJson('intel/stars.json', (s) => fn(s || {}), { fallback: {} }),
 
