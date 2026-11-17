@@ -4,6 +4,7 @@ import { panel, muted, btnStyle, Pill, InsightCard, fmtDate, n0 } from './intelU
 // IntelAnalyzer.jsx: read one pasted article with Claude and turn it into a card for the feed. Claude is told to use only the
 // facts stated in the text. The rep sees the card first, and nothing reaches the feed until they press Save.
 
+const MIN_CHARS = 300
 const field = { width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-panel)', color: 'var(--text)', fontFamily: 'inherit' }
 
 export default function Analyzer({ api, status, onSaved }) {
@@ -53,20 +54,20 @@ export default function Analyzer({ api, status, onSaved }) {
                 <input aria-label="Source name" value={sourceName} onChange={(e) => setSourceName(e.target.value)} placeholder="Source name (optional)" style={{ ...field, flex: '1 1 160px', width: 'auto' }} />
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-                <button type="button" disabled={busy || text.trim().length < 20 || !url.trim()} onClick={analyze} style={btnStyle(true)}>{busy && !result ? 'Reading...' : 'Analyze'}</button>
+                <button type="button" disabled={busy || text.trim().length < MIN_CHARS || !url.trim()} onClick={analyze} style={btnStyle(true)}>{busy && !result ? 'Reading...' : 'Analyze'}</button>
                 {ai && <span style={muted}>{ai.usedToday} of {ai.limitPerDay} analyses used today. This month the team has run {ai.month.runs}, about ${ai.month.estCost.toFixed(2)} at the current estimate.</span>}
               </div>
-              <div style={muted}>Claude uses only the facts in the text and leaves the rest blank. Check the card before saving it.</div>
+              <div style={{ ...muted, color: text.trim().length && text.trim().length < MIN_CHARS ? '#8A3F06' : 'var(--text-secondary)' }}>{text.trim().length.toLocaleString()} characters pasted.{text.trim().length < MIN_CHARS ? ` Claude needs at least ${MIN_CHARS}, a short paragraph. Paste the whole article for the best card.` : ''} Claude uses only the facts in the text and leaves the rest blank. Check the card before saving it.</div>
             </div>
           )}
           {error && <div role="alert" style={{ color: 'var(--red)', fontSize: 13, marginTop: 10 }}>{error}</div>}
 
           {result && !saved && (
             <div style={{ marginTop: 14 }}>
-              {result.truncated && <div style={{ ...muted, marginBottom: 8 }}>The article was long, so Claude read the first part of it.</div>}
+              {result.read && <div style={{ ...muted, marginBottom: 8 }}>Claude read {result.read.words.toLocaleString()} words from what you pasted.{result.truncated ? ' The article was long, so it read the first part.' : ''}</div>}
               {!result.savable && (
                 <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, fontSize: 13, lineHeight: 1.55 }}>
-                  <strong>{result.analysis.title}</strong><div style={{ marginTop: 4 }}>{result.analysis.summary}</div><div style={{ ...muted, marginTop: 6 }}>{result.notSavable}</div>
+                  <strong>{result.analysis.title}</strong><div style={{ marginTop: 4 }}>{result.analysis.summary}</div><div style={{ ...muted, marginTop: 6 }}>{result.notSavable}</div>{result.analysis.reason && <div style={{ marginTop: 6 }}>Claude&rsquo;s reason: {result.analysis.reason}</div>}
                 </div>
               )}
               {result.savable && result.preview && (
