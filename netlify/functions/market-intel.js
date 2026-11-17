@@ -24,6 +24,7 @@
 import { withAuth } from './utils/auth.js'
 import { isAdmin } from './utils/teamAccess.js'
 import { BDRS, resolveBdr } from './utils/intelSchema.js'
+import { PRODUCT_KIT } from './utils/intelFeed.js'
 import { loadContext, buildInsightView, filterInsights, facetsOf, buildCompetitiveView, aiStatus, runAnalyzer, saveAnalysis, buildAccountView, buildHealth, importRecords, setStar, refreshStep, saveStateTable, buildMapView, buildAccountDetail, buildHomeView, withContacts } from './utils/intelService.js'
 import { buildDeps } from './utils/intelDeps.js'
 
@@ -86,7 +87,7 @@ export function createHandler(getDeps) {
         const ctx2 = await loadContext(d.store)
         const base = buildInsightView(ctx2, { now, bdr: bdrParam() })
         const items = filterInsights(base, { type: qp.type || null, days: qp.days ? num(qp.days, null, 3650) : null, state: qp.state || null, line: qp.line || null, q: qp.q || '', openOnly: qp.open === '1' })
-        return json(200, { total: items.length, items: items.slice(0, num(qp.limit, 200, 500)), facets: facetsOf(base) })
+        return json(200, { total: items.length, items: items.slice(0, num(qp.limit, 200, 500)), facets: facetsOf(base), products: PRODUCT_KIT })
       }
 
       if (event.httpMethod === 'GET' && path === '/competitive') {
